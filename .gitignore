@@ -1,0 +1,11 @@
+# Rust build artifacts
+/target/
+
+# Temporary/editor artifacts
+.DS_Store
+
+# Runtime session/cache files
+/.pi/
+
+# Optional local lock files
+*.lock
