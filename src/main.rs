@@ -77,7 +77,8 @@ async fn main() {
 
     let provider = build_provider(&cli.provider).await;
 
-    let session_path = workspace.join(".pi").join("session.jsonl");
+    let session_path = SessionStore::resolve_session_path(".pi/session.jsonl", workspace.clone())
+        .unwrap_or_else(|err| panic!("failed to resolve session path: {err}"));
     let session_store = SessionStore::new(session_path)
         .await
         .unwrap_or_else(|err| panic!("failed to open session store: {err}"));

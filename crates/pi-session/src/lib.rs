@@ -6,7 +6,7 @@ use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
@@ -20,6 +20,8 @@ pub enum SessionError {
     Json(#[from] serde_json::Error),
     #[error("entry {0} not found")]
     MissingEntry(String),
+    #[error("session path rejected: {0}")]
+    InvalidPath(String),
 }
 
 #[derive(Debug, Clone)]
@@ -40,6 +42,38 @@ pub struct SessionStore {
 }
 
 impl SessionStore {
+    pub fn default_session_path(workspace_root: impl AsRef<Path>) -> PathBuf {
+        workspace_root.as_ref().join(".pi").join("session.jsonl")
+    }
+
+    pub fn resolve_session_path(
+        requested: impl AsRef<Path>,
+        workspace_root: impl AsRef<Path>,
+    ) -> Result<PathBuf> {
+        let workspace_root = workspace_root.as_ref();
+        let requested = requested.as_ref();
+
+        let workspace_root = workspace_root
+            .canonicalize()
+            .map_err(|err| SessionError::InvalidPath(err.to_string()))?;
+        let candidate = if requested.is_absolute() {
+            requested.to_path_buf()
+        } else {
+            workspace_root.join(requested)
+        };
+        let normalized = normalize_path(&candidate);
+        if !normalized.starts_with(&workspace_root) {
+            return Err(SessionError::InvalidPath(
+                "session path is outside workspace".to_string(),
+        ));
+        }
+
+        if let Some(parent) = normalized.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        Ok(normalized)
+    }
+
     pub async fn new(path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
         if let Some(parent) = path.parent() {
@@ -294,6 +328,26 @@ fn canonicalize_json_value(value: Value) -> Value {
         }
         other => other,
     }
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = if path.is_absolute() {
+        PathBuf::from("/")
+    } else {
+        PathBuf::new()
+    };
+    for component in path.components() {
+        match component {
+            Component::RootDir => {}
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Normal(segment) => normalized.push(segment),
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+        }
+    }
+    normalized
 }
 
 #[derive(Debug, Serialize, serde::Deserialize)]
