@@ -1,0 +1,16 @@
+[package]
+name = "pi-tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dependencies]
+pi-search = { path = "../pi-search" }
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+tokio.workspace = true
+thiserror.workspace = true

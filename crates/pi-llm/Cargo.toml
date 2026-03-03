@@ -1,0 +1,21 @@
+[package]
+name = "pi-llm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[features]
+default = ["mock-llm"]
+mock-llm = []
+openai = []
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+reqwest.workspace = true
+thiserror.workspace = true

@@ -1,0 +1,527 @@
+{
+  "meta": {
+    "product_name": "pi-native",
+    "repo_codename": "pi-native-rs",
+    "doc_type": "PRD",
+    "doc_format": "prd.json",
+    "doc_version": "0.1.0",
+    "created_utc": "2026-03-02T15:24:35Z",
+    "authors": [
+      "GPT-5.2 Pro (draft)"
+    ],
+    "source_inspiration": [
+      {
+        "name": "Dicklesworthstone/pi_agent_rust",
+        "notes": "Rust CLI port of Pi agent; single-binary focus; 7 built-in tools; JSONL session tree; RPC mode; capability-gated extension runtime."
+      },
+      {
+        "name": "badlogic/pi-mono",
+        "notes": "Original TypeScript monorepo: coding-agent CLI + unified LLM API + UI libraries + Slack bot + vLLM pods; extensible via TS Extensions/Skills/Prompt Templates/Themes."
+      },
+      {
+        "name": "dmtrKovalenko/fff.nvim",
+        "notes": "High-performance Rust-backed fuzzy file picker with persistent index, frecency, git status, and typo-resistant search."
+      }
+    ],
+    "target_platforms": [
+      "macOS",
+      "Linux",
+      "Windows"
+    ],
+    "audience": [
+      "terminal developers",
+      "toolsmiths",
+      "platform integrators",
+      "teams running LLMs"
+    ]
+  },
+  "problem_statement": {
+    "context": [
+      "pi-mono offers a flexible toolkit but is built on a JS/TS runtime stack.",
+      "pi_agent_rust demonstrates a fast Rust CLI but search/indexing and toolkit breadth can be improved and unified.",
+      "Large monorepos need faster file/code search and completion than periodic directory walks and small caps."
+    ],
+    "pain_points": [
+      "High memory/latency and cold-start costs in JS-heavy agent toolchains.",
+      "Inconsistent behavior and complexity across multiple repos/languages.",
+      "Slow or limited file completion/search in large codebases.",
+      "Hard-to-audit extension/tool permissions; need capability-based isolation."
+    ],
+    "opportunity": [
+      "Deliver a cohesive, native Rust agent toolkit with strong performance and memory safety.",
+      "Provide a first-class search subsystem (file picker + grep) with persistent indexing, frecency, git integration, and typo-tolerant fuzzy matching.",
+      "Preserve Pi’s extensibility model (extensions/skills/prompts/themes) while making the core runtime Rust-native."
+    ]
+  },
+  "vision": "A minimal-but-powerful coding agent harness that is natively Rust: fast startup, low memory, predictable streaming, safe-by-default tools, and an extensible plugin ecosystem—without requiring Node/Bun at runtime.",
+  "goals": [
+    {
+      "id": "G1",
+      "title": "Native Rust core + single-binary CLI",
+      "detail": "Ship a single `pi` executable with an embeddable Rust library (`pi-core`) and stable streaming UX."
+    },
+    {
+      "id": "G2",
+      "title": "Unified LLM API in Rust",
+      "detail": "Provide a provider-agnostic interface with model discovery, tool-calling, token/cost tracking, streaming, abort/resume, and OpenAI-compatible endpoints."
+    },
+    {
+      "id": "G3",
+      "title": "High-performance file + code search",
+      "detail": "Implement persistent indexing with typo-resistant fuzzy path search, frecency and git-aware ranking, and fast content search with plain/regex/fuzzy modes."
+    },
+    {
+      "id": "G4",
+      "title": "Extensibility without forking",
+      "detail": "Support skills/prompts/themes/packages and extensions with capability-based isolation. Default: WASM components; optional: JS/TS compatibility runtime for existing ecosystem."
+    },
+    {
+      "id": "G5",
+      "title": "Multiple execution surfaces",
+      "detail": "Interactive TUI, print mode, and a headless JSON-RPC/stdio mode for IDEs and custom frontends."
+    },
+    {
+      "id": "G6",
+      "title": "Toolchain-quality testing",
+      "detail": "Conformance suite for extensions, deterministic RPC protocol tests, search benchmarks, and robust integration tests for tool sandboxing."
+    }
+  ],
+  "non_goals": [
+    "Build a full IDE or editor (Pi remains a harness; integrations happen via RPC/SDK).",
+    "Implement autonomous 'sub-agent swarms' as a default behavior (kept as optional via extensions).",
+    "Ship proprietary provider credentials handling beyond standard OAuth/API-key flows.",
+    "Replace ripgrep entirely; instead, provide an optimized default path with optional delegation."
+  ],
+  "personas": [
+    {
+      "id": "P1",
+      "name": "Terminal Developer",
+      "primary_needs": [
+        "fast interactive assistance",
+        "safe tool execution",
+        "great search/navigation",
+        "session continuity"
+      ],
+      "environment": [
+        "macOS/Linux terminal",
+        "git repos",
+        "monorepos",
+        "CI"
+      ],
+      "success_criteria": [
+        "<100ms perceived startup",
+        "snappy completion",
+        "reliable sessions",
+        "predictable tool behavior"
+      ]
+    },
+    {
+      "id": "P2",
+      "name": "Toolsmith / Extension Author",
+      "primary_needs": [
+        "stable plugin API",
+        "safe hostcalls",
+        "hot reload",
+        "type-safe tool schemas"
+      ],
+      "environment": [
+        "Rust/WASM or TS extensions",
+        "custom workflows"
+      ],
+      "success_criteria": [
+        "minimal boilerplate",
+        "clear capability model",
+        "good docs + test harness"
+      ]
+    },
+    {
+      "id": "P3",
+      "name": "Platform Integrator",
+      "primary_needs": [
+        "RPC protocol",
+        "SDK",
+        "automation hooks",
+        "telemetry"
+      ],
+      "environment": [
+        "IDEs",
+        "CI systems",
+        "internal tools"
+      ],
+      "success_criteria": [
+        "stable API surface",
+        "reproducible runs",
+        "bounded resource use"
+      ]
+    },
+    {
+      "id": "P4",
+      "name": "Security / Compliance Admin",
+      "primary_needs": [
+        "policy presets",
+        "audit logs",
+        "least-privilege extensions",
+        "path/command restrictions"
+      ],
+      "environment": [
+        "enterprise laptops",
+        "regulated environments"
+      ],
+      "success_criteria": [
+        "provable constraints",
+        "easy policy rollout",
+        "no silent permission escalation"
+      ]
+    },
+    {
+      "id": "P5",
+      "name": "LLM Ops Engineer",
+      "primary_needs": [
+        "OpenAI-compatible endpoint support",
+        "vLLM deployment templates",
+        "model registry controls"
+      ],
+      "environment": [
+        "Kubernetes",
+        "GPU nodes",
+        "internal gateways"
+      ],
+      "success_criteria": [
+        "repeatable deployments",
+        "clear configuration",
+        "observability"
+      ]
+    }
+  ],
+  "user_stories": [
+    {
+      "id": "US-CLI-001",
+      "persona": "P1",
+      "story": "As a terminal developer, I can start an interactive `pi` session that streams responses and tool activity smoothly.",
+      "acceptance_criteria": [
+        "Streaming begins without blocking the UI.",
+        "Tool calls are rendered with clear boundaries and errors are readable.",
+        "Abort stops current work and returns to prompt within 250ms after tool boundary."
+      ],
+      "priority": "MUST"
+    },
+    {
+      "id": "US-CLI-002",
+      "persona": "P1",
+      "story": "As a terminal developer, I can run `pi -p \"...\"` to get a single answer suitable for scripts (no TUI).",
+      "acceptance_criteria": [
+        "Writes answer to stdout; errors to stderr.",
+        "Non-interactive exit codes are stable and documented."
+      ],
+      "priority": "MUST"
+    },
+    {
+      "id": "US-CLI-003",
+      "persona": "P1",
+      "story": "As a terminal developer, I can reference files using `@path` with fast, typo-tolerant completion.",
+      "acceptance_criteria": [
+        "Completion works in repos with 50k+ files.",
+        "Ranking prefers recently opened/modified files and relevant git statuses.",
+        "Completion updates incrementally on filesystem changes."
+      ],
+      "priority": "MUST"
+    },
+    {
+      "id": "US-SESSION-001",
+      "persona": "P1",
+      "story": "As a terminal developer, my sessions persist on disk and support branching and navigation.",
+      "acceptance_criteria": [
+        "Sessions stored as an append-only log with stable schema and versioning.",
+        "I can continue most recent session and open a specific session by path.",
+        "I can branch from a prior turn without losing history."
+      ],
+      "priority": "MUST"
+    },
+    {
+      "id": "US-RPC-001",
+      "persona": "P3",
+      "story": "As an integrator, I can control the agent via a line-delimited JSON protocol (stdin/stdout) and receive streaming events.",
+      "acceptance_criteria": [
+        "Protocol supports prompt/steer/follow-up/abort/get-state/compact.",
+        "Protocol is versioned with backward-compatible evolution rules.",
+        "Malformed input yields structured error events without crashing."
+      ],
+      "priority": "MUST"
+    },
+    {
+      "id": "US-LLM-001",
+      "persona": "P1",
+      "story": "As a developer, I can switch providers/models and keep token/cost accounting per session.",
+      "acceptance_criteria": [
+        "Model registry lists available tool-capable models per provider.",
+        "Costs/tokens recorded in session metadata and exported as JSON."
+      ],
+      "priority": "MUST"
+    },
+    {
+      "id": "US-TOOLS-001",
+      "persona": "P4",
+      "story": "As a security admin, I can apply a policy preset (safe/balanced/permissive) that governs tool and extension capabilities.",
+      "acceptance_criteria": [
+        "Policies can be inspected and explained ('why was this denied?').",
+        "All denied actions are logged with context.",
+        "Default posture is safe-by-default."
+      ],
+      "priority": "MUST"
+    },
+    {
+      "id": "US-EXT-001",
+      "persona": "P2",
+      "story": "As an extension author, I can add a custom tool and command without forking core.",
+      "acceptance_criteria": [
+        "Extensions can register tools, commands, and event hooks.",
+        "Extensions can be hot-reloaded in interactive mode.",
+        "Extensions run with no ambient OS access; hostcalls are capability-gated."
+      ],
+      "priority": "MUST"
+    },
+    {
+      "id": "US-SKILL-001",
+      "persona": "P1",
+      "story": "As a developer, I can install and use skills that follow the Agent Skills standard and are loaded on-demand.",
+      "acceptance_criteria": [
+        "Skills are discovered from standard locations and can be disabled.",
+        "Skill frontmatter is validated with warnings; missing description blocks loading.",
+        "Skills are progressively disclosed (only description always in context)."
+      ],
+      "priority": "SHOULD"
+    },
+    {
+      "id": "US-SEARCH-001",
+      "persona": "P1",
+      "story": "As a developer, I can search code content interactively with plain/regex/fuzzy modes and get highlights.",
+      "acceptance_criteria": [
+        "Plain mode is fast and does not compile regex.",
+        "Regex mode reports a readable error and can fall back safely.",
+        "Fuzzy mode ranks by match score and returns highlight spans."
+      ],
+      "priority": "SHOULD"
+    },
+    {
+      "id": "US-BOT-001",
+      "persona": "P5",
+      "story": "As a team, we can run a Slack bot that routes messages into pi sessions and posts results with context.",
+      "acceptance_criteria": [
+        "Bot supports per-channel/per-thread sessions.",
+        "Sensitive capabilities can be disabled."
+      ],
+      "priority": "COULD"
+    }
+  ],
+  "functional_requirements": {
+    "cli": {
+      "modes": [
+        "interactive",
+        "print",
+        "rpc"
+      ],
+      "commands": [
+        "pi [prompt]",
+        "pi --continue",
+        "pi --session <path>",
+        "pi -p <prompt>",
+        "pi --mode rpc",
+        "pi doctor",
+        "pi search <query>",
+        "pi info <package-or-extension>",
+        "pi update-index"
+      ]
+    },
+    "llm_api": {
+      "features": [
+        "provider abstraction",
+        "tool calling",
+        "streaming",
+        "abort and resume semantics",
+        "token/cost tracking",
+        "model discovery",
+        "OpenAI-compatible provider"
+      ]
+    },
+    "tools": {
+      "builtins": [
+        "read",
+        "write",
+        "edit",
+        "bash",
+        "grep",
+        "find",
+        "ls"
+      ],
+      "sandboxing": [
+        "path allow/deny",
+        "max file sizes",
+        "bash timeout + kill process tree",
+        "tool audit logging"
+      ]
+    },
+    "search": {
+      "file_search": [
+        "persistent index",
+        "typo-tolerant fuzzy matching",
+        "constraints/filters",
+        "frecency ranking",
+        "git status integration",
+        "pagination"
+      ],
+      "content_search": [
+        "plain text (SIMD substring)",
+        "regex",
+        "fuzzy per-line scoring",
+        "time budgets to avoid UI freezes",
+        "highlight spans"
+      ]
+    },
+    "sessions": {
+      "storage": [
+        "append-only JSONL",
+        "optional v2 sidecar DB"
+      ],
+      "features": [
+        "branching tree",
+        "compaction",
+        "metadata (model, costs, timings)",
+        "export/import"
+      ]
+    },
+    "extensions": {
+      "runtimes": [
+        "WASM component (default)",
+        "JS/TS compatibility runtime (optional)",
+        "MCP connectors"
+      ],
+      "capabilities": [
+        "tool invocation",
+        "network (optional)",
+        "fs access (no direct, only via tool hostcalls)",
+        "UI interactions (interactive mode)"
+      ],
+      "hot_reload": true
+    },
+    "skills_prompts_themes": {
+      "skills": "Agent Skills standard support",
+      "prompt_templates": "file-based templates + expansion",
+      "themes": "TUI theming"
+    }
+  },
+  "non_functional_requirements": {
+    "performance_targets": {
+      "startup_cold_ms_p50": 150,
+      "startup_cold_ms_p95": 300,
+      "idle_rss_mb_target": 80,
+      "file_search_p95_ms_for_50k_files": 10,
+      "grep_first_page_p95_ms_for_5k_files": 50,
+      "tui_frame_budget_ms": 16.7
+    },
+    "reliability": {
+      "no_panics_in_normal_operation": true,
+      "graceful_degradation": [
+        "provider failures -> retry + clear error",
+        "extension failures -> isolate + disable",
+        "search index corruption -> rebuild"
+      ]
+    },
+    "security": {
+      "default_policy": "safe",
+      "capability_based_extensions": true,
+      "audit_logs": true
+    },
+    "portability": {
+      "supported_os": [
+        "macOS",
+        "Linux",
+        "Windows"
+      ],
+      "no_required_runtime": [
+        "node",
+        "bun",
+        "python"
+      ]
+    }
+  },
+  "success_metrics": {
+    "adoption": {
+      "weekly_active_users": "TBD",
+      "extension_ecosystem": "TBD"
+    },
+    "quality": {
+      "crash_free_sessions_rate": ">= 99.9%",
+      "search_latency_p95": "<= target",
+      "rpc_compatibility": "no breaking changes within a major version"
+    }
+  },
+  "risks": [
+    {
+      "id": "R1",
+      "risk": "Maintaining compatibility with existing TS extension ecosystem may complicate the Rust-native runtime.",
+      "mitigation": "Treat JS/TS runtime as optional compatibility layer; make WASM the primary long-term path; provide automated conformance tests."
+    },
+    {
+      "id": "R2",
+      "risk": "Persistent indexing can introduce corruption or edge-case correctness issues.",
+      "mitigation": "Use checksummed records, health-check on startup, and automatic rebuild; keep index append-only where possible."
+    },
+    {
+      "id": "R3",
+      "risk": "Provider APIs evolve quickly (models, endpoints, auth).",
+      "mitigation": "Plugin-like provider modules; strong contract tests with recorded fixtures; OpenAI-compatible adapter as escape hatch."
+    }
+  ],
+  "milestones": [
+    {
+      "name": "M0: Architecture + test harness",
+      "deliverables": [
+        "workspace skeleton",
+        "RPC protocol schema + tests",
+        "session format + roundtrip tests",
+        "search crate scaffolding + benchmarks"
+      ]
+    },
+    {
+      "name": "M1: CLI parity MVP",
+      "deliverables": [
+        "interactive + print + rpc modes",
+        "built-in tools",
+        "session persistence",
+        "basic provider (OpenAI-compatible)"
+      ]
+    },
+    {
+      "name": "M2: Search upgrade",
+      "deliverables": [
+        "persistent index",
+        "typo-tolerant fuzzy file search",
+        "fast grep modes + highlights",
+        "completion integration"
+      ]
+    },
+    {
+      "name": "M3: Extensibility",
+      "deliverables": [
+        "WASM extension runtime",
+        "capability policies + audit logs",
+        "JS/TS compatibility runtime (optional)",
+        "skills/prompts/themes/packages"
+      ]
+    },
+    {
+      "name": "M4: Toolkit breadth",
+      "deliverables": [
+        "Rust SDK",
+        "Slack bot",
+        "vLLM pod templates + docs"
+      ]
+    }
+  ],
+  "open_questions": [
+    "Should the primary async runtime be tokio, asupersync, or an abstraction over both?",
+    "How much TS extension compatibility is required on day 1 vs later?",
+    "Which session format version is adopted: strict JSONL-only vs JSONL + sidecar DB by default?",
+    "Should content search delegate to ripgrep by default on very large repos, or always use internal grep engine?"
+  ]
+}

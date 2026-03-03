@@ -1,0 +1,61 @@
+[workspace]
+members = [
+  "crates/pi-protocol",
+  "crates/pi-session",
+  "crates/pi-search",
+  "crates/pi-tools",
+  "crates/pi-llm",
+  "crates/pi-core",
+  "crates/pi-ext",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.76"
+version = "0.1.0"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+base64 = "0.22"
+thiserror = "1.0"
+uuid = { version = "1.10", features = ["v4", "serde", "fast-rng"] }
+tokio = { version = "1.47", features = ["rt-multi-thread", "macros", "fs", "io-util", "process", "time", "sync", "signal", "io-std"] }
+clap = { version = "4.5", features = ["derive"] }
+futures = "0.3"
+notify = "8.0"
+regex = "1.11"
+strsim = "0.11"
+walkdir = "2.5"
+ignore = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+schemars = "0.8"
+async-trait = "0.1"
+
+[package]
+name = "pi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tokio.workspace = true
+clap.workspace = true
+pi-core = { path = "crates/pi-core" }
+pi-protocol = { path = "crates/pi-protocol" }
+pi-session = { path = "crates/pi-session" }
+pi-tools = { path = "crates/pi-tools" }
+pi-search = { path = "crates/pi-search" }
+pi-llm = { path = "crates/pi-llm", default-features = false, features = ["openai"] }
+serde_json.workspace = true
+uuid.workspace = true
+
+[features]
+default = ["mock-llm", "openai"]
+mock-llm = ["pi-llm/mock-llm"]
+openai = ["pi-llm/openai"]
+protocol-schema = ["pi-protocol/schema"]
+
+[dev-dependencies]
+tempfile = "3.17"

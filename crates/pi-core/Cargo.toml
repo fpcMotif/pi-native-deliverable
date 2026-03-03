@@ -1,0 +1,22 @@
+[package]
+name = "pi-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dependencies]
+pi-protocol = { path = "../pi-protocol" }
+pi-session = { path = "../pi-session" }
+pi-tools = { path = "../pi-tools" }
+pi-search = { path = "../pi-search" }
+pi-llm = { path = "../pi-llm" }
+pi-ext = { path = "../pi-ext" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+futures.workspace = true
+thiserror.workspace = true
+uuid.workspace = true

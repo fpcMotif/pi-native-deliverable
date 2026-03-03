@@ -1,0 +1,16 @@
+[package]
+name = "pi-session"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dependencies]
+pi-protocol = { path = "../pi-protocol" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+tokio.workspace = true

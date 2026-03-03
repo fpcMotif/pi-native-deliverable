@@ -1,0 +1,19 @@
+[package]
+name = "pi-protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[features]
+default = []
+schema = ["dep:schemars"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+schemars = { workspace = true, optional = true }
