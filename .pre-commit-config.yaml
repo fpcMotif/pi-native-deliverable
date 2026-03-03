@@ -1,0 +1,39 @@
+repos:
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt --all -- --check
+        entry: cargo
+        language: system
+        pass_filenames: false
+        always_run: true
+        args:
+          - fmt
+          - --all
+          - --
+          - --check
+
+      - id: cargo-check
+        name: cargo check --workspace --all-features
+        entry: cargo
+        language: system
+        pass_filenames: false
+        always_run: true
+        args:
+          - check
+          - --workspace
+          - --all-features
+
+      - id: cargo-clippy
+        name: cargo clippy --workspace --all-features -D warnings
+        entry: cargo
+        language: system
+        pass_filenames: false
+        always_run: true
+        args:
+          - clippy
+          - --workspace
+          - --all-features
+          - --
+          - -D
+          - warnings

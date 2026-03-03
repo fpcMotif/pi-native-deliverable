@@ -13,6 +13,13 @@ jobs:
       - name: Rust
         uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Run pre-commit config via prek when available
+        run: |
+          if command -v prek >/dev/null; then
+            prek run --all-files
+          else
+            echo "prek not found; proceeding with direct cargo checks below."
+          fi
       - name: fmt
         run: cargo fmt --all -- --check
       - name: clippy
