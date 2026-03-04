@@ -359,13 +359,18 @@ impl SearchService {
             matched_files: 0,
         };
 
-        let regex = if let GrepMode::Regex = mode {
-            Some(Regex::new(pattern)?)
-        } else {
-            None
+        let regex = match mode {
+            GrepMode::Regex => Some(Regex::new(pattern)?),
+            GrepMode::PlainText => Some(
+                regex::RegexBuilder::new(&regex::escape(pattern))
+                    .case_insensitive(true)
+                    .build()?,
+            ),
+            GrepMode::Fuzzy => None,
         };
 
         let lower = pattern.to_lowercase();
+        let mut lower_line = String::new();
         for entry in index.iter() {
             if !entry.relative_path.starts_with(scope) {
                 continue;
@@ -390,13 +395,14 @@ impl SearchService {
                 }
 
                 let matched = match mode {
-                    GrepMode::PlainText => line.to_lowercase().contains(&lower),
-                    GrepMode::Regex => {
+                    GrepMode::PlainText | GrepMode::Regex => {
                         let regex = regex.as_ref().expect("regex");
                         regex.is_match(line)
                     }
                     GrepMode::Fuzzy => {
-                        normalized_levenshtein(&line.to_lowercase(), &lower) >= 0.72
+                        lower_line.clear();
+                        lower_line.extend(line.chars().flat_map(|c| c.to_lowercase()));
+                        normalized_levenshtein(&lower_line, &lower) >= 0.72
                     }
                 };
 
