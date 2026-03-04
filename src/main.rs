@@ -61,7 +61,7 @@ enum Mode {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     if let Some(Command::Protocol {
@@ -69,7 +69,7 @@ async fn main() {
     }) = cli.command
     {
         run_protocol_schema(out).await;
-        return;
+        return Ok(());
     }
 
     let workspace = cli.workspace.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
@@ -78,17 +78,17 @@ async fn main() {
     let provider = build_provider(&cli.provider).await;
 
     let session_path = SessionStore::resolve_session_path(".pi/session.jsonl", workspace.clone())
-        .unwrap_or_else(|err| panic!("failed to resolve session path: {err}"));
+        .map_err(|err| format!("failed to resolve session path: {err}"))?;
     let session_store = SessionStore::new(session_path)
         .await
-        .unwrap_or_else(|err| panic!("failed to open session store: {err}"));
+        .map_err(|err| format!("failed to open session store: {err}"))?;
 
     let search_service = SearchService::new(SearchServiceConfig {
         workspace_root: workspace.clone(),
         ..Default::default()
     })
     .await
-    .unwrap_or_else(|err| panic!("failed to create search service: {err}"));
+    .map_err(|err| format!("failed to create search service: {err}"))?;
 
     let policy = Policy::safe_defaults(workspace.clone());
     let registry = default_registry(search_service.clone());
@@ -140,6 +140,8 @@ async fn main() {
         }
         Mode::Interactive => run_interactive(agent).await,
     }
+
+    Ok(())
 }
 
 async fn run_protocol_schema(out: PathBuf) {
