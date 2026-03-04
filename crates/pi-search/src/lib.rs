@@ -367,7 +367,7 @@ impl SearchService {
 
         let lower = pattern.to_lowercase();
         for entry in index.iter() {
-            if !entry.relative_path.starts_with(scope) {
+            if !Path::new(&entry.relative_path).starts_with(scope) {
                 continue;
             }
 
@@ -486,7 +486,7 @@ fn matches_scope(entry: &IndexedFile, scope: Option<&str>) -> bool {
             if scope == "." {
                 true
             } else {
-                entry.relative_path.starts_with(scope)
+                Path::new(&entry.relative_path).starts_with(scope)
             }
         }
         None => true,
@@ -507,7 +507,7 @@ fn matches_filters(entry: &IndexedFile, filters: &[SearchFilter], query: &str) -
         let scope_ok = filter
             .path_prefix
             .as_ref()
-            .is_none_or(|prefix| entry.relative_path.starts_with(prefix));
+            .is_none_or(|prefix| Path::new(&entry.relative_path).starts_with(prefix));
         if !ext_ok || !scope_ok {
             return false;
         }
