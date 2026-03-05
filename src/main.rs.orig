@@ -144,7 +144,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn run_protocol_schema(_out: PathBuf) {
+async fn run_protocol_schema(out: PathBuf) {
     #[cfg(feature = "protocol-schema")]
     {
         if let Some(parent) = out.parent() {
