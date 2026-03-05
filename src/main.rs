@@ -77,18 +77,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let provider = build_provider(&cli.provider).await;
 
-    let session_path = SessionStore::resolve_session_path(".pi/session.jsonl", workspace.clone())
-        .map_err(|err| format!("failed to resolve session path: {err}"))?;
-    let session_store = SessionStore::new(session_path)
-        .await
-        .map_err(|err| format!("failed to open session store: {err}"))?;
+    let session_path = SessionStore::resolve_session_path(".pi/session.jsonl", workspace.clone())?;
+    let session_store = SessionStore::new(session_path).await?;
 
     let search_service = SearchService::new(SearchServiceConfig {
         workspace_root: workspace.clone(),
         ..Default::default()
     })
-    .await
-    .map_err(|err| format!("failed to create search service: {err}"))?;
+    .await?;
 
     let policy = Policy::safe_defaults(workspace.clone());
     let registry = default_registry(search_service.clone());
