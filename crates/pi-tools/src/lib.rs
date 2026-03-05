@@ -370,9 +370,22 @@ impl Tool for ReadTool {
             .unwrap_or(policy.max_file_size as u64) as usize;
 
         let normalized = policy.canonicalize_path(&path, cwd)?;
-        let mut bytes = Vec::new();
-        fs::File::open(&normalized)?.read_to_end(&mut bytes)?;
-        if bytes.iter().any(|byte| *byte == 0) {
+
+        // Read first 8KB to check for binary content before reading the entire file
+        const BINARY_CHECK_SIZE: usize = 8 * 1024;
+        let mut file = fs::File::open(&normalized)?;
+        let mut header = vec![0u8; BINARY_CHECK_SIZE];
+        let header_len = file.read(&mut header)?;
+        header.truncate(header_len);
+        if header.contains(&0) {
+            return Err(ToolError::denied("refusing to read binary file"));
+        }
+
+        // Read the rest of the file
+        let header_end = header.len();
+        let mut bytes = header;
+        file.read_to_end(&mut bytes)?;
+        if bytes.len() > header_end && bytes[header_end..].contains(&0) {
             return Err(ToolError::denied("refusing to read binary file"));
         }
 

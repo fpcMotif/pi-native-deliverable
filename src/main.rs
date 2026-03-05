@@ -72,9 +72,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let workspace = cli
-        .workspace
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+    let workspace = match cli.workspace {
+        Some(path) => path,
+        None => std::env::current_dir()?,
+    };
     let line_limit = cli.line_limit.unwrap_or(1024 * 1024);
 
     let provider = build_provider(&cli.provider).await;

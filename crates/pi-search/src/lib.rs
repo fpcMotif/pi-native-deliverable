@@ -300,8 +300,11 @@ impl SearchService {
             if let Some(parent) = path.parent() {
                 tokio::fs::create_dir_all(parent).await?;
             }
-            let index = self.index.read().await;
-            if let Ok(json) = serde_json::to_string(&*index) {
+            let json = {
+                let index = self.index.read().await;
+                serde_json::to_string(&*index).ok()
+            };
+            if let Some(json) = json {
                 tokio::fs::write(path, json).await?;
             }
         }
@@ -330,10 +333,16 @@ impl SearchService {
                 if let Ok(event) = event {
                     match event.kind {
                         EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {
-                            service.rebuild_index().await.ok();
-                            service.save_index().await.ok();
+                            if let Err(err) = service.rebuild_index().await {
+                                eprintln!("pi-search: watcher rebuild_index failed: {err}");
+                            }
+                            if let Err(err) = service.save_index().await {
+                                eprintln!("pi-search: watcher save_index failed: {err}");
+                            }
                             if service.config.use_git_status {
-                                service.refresh_git_status().await.ok();
+                                if let Err(err) = service.refresh_git_status().await {
+                                    eprintln!("pi-search: watcher refresh_git_status failed: {err}");
+                                }
                             }
                         }
                         _ => {}
@@ -349,6 +358,12 @@ impl SearchService {
     }
 
     pub async fn find_files(&self, query: &SearchQuery) -> SearchResult<SearchResponse> {
+        if query.token.is_some() && query.offset != 0 {
+            return Err(SearchError::InvalidToken(
+                "cannot provide both token and non-zero offset".to_string(),
+            ));
+        }
+
         let start = if let Some(token) = query.token.as_deref() {
             decode_token(token)?
         } else {
@@ -439,6 +454,12 @@ impl SearchService {
     }
 
     pub async fn grep_query(&self, query: GrepQuery) -> SearchResult<GrepResponse> {
+        if query.token.is_some() && query.offset != 0 {
+            return Err(SearchError::InvalidToken(
+                "cannot provide both token and non-zero offset".to_string(),
+            ));
+        }
+
         let index = self.index.read().await;
         let limit = query.limit.max(1).min(self.config.grep_line_limit);
         let start = query
@@ -486,12 +507,25 @@ impl SearchService {
             matched_files: 0,
         };
 
+        let workspace_canonical = self.config.workspace_root.canonicalize().ok();
+
         for entry in index.iter() {
             if !scope_is_prefix(&entry.relative_path, &query.scope) {
                 continue;
             }
 
-            let bytes = match std::fs::read(&entry.absolute_path) {
+            // Resolve symlinks and verify path stays within workspace
+            let resolved_path = match entry.absolute_path.canonicalize() {
+                Ok(path) => path,
+                Err(_) => continue,
+            };
+            if let Some(ref root) = workspace_canonical {
+                if !resolved_path.starts_with(root) {
+                    continue;
+                }
+            }
+
+            let bytes = match std::fs::read(&resolved_path) {
                 Ok(value) => value,
                 Err(_) => continue,
             };

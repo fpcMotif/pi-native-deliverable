@@ -35,13 +35,33 @@ fn fuzzy_scoring_prefers_entrypoints_and_filename_bonus() {
         let res = svc.find_files(&query).await.unwrap();
         assert!(res.items.len() >= 3);
 
-        let path0 = &res.items[0].relative_path;
-        let path1 = &res.items[1].relative_path;
+        // Exact main.rs entrypoints should be top 2.
+        // Both have identical scores (contains match + filename + entrypoint + extension bonuses),
+        // so alphabetical path tiebreak determines order.
+        assert_eq!(
+            res.items[0].relative_path, "crates/app/src/main.rs",
+            "alphabetically first entrypoint should rank first on score tie"
+        );
+        assert_eq!(
+            res.items[1].relative_path, "src/main.rs",
+            "alphabetically second entrypoint should rank second on score tie"
+        );
 
-        // Exact main.rs entrypoints should be top 2
-        let top_two = vec![path0.as_str(), path1.as_str()];
-        assert!(top_two.contains(&"src/main.rs"));
-        assert!(top_two.contains(&"crates/app/src/main.rs"));
+        // Verify tied scores for the two exact entrypoint matches
+        assert!(
+            (res.items[0].score - res.items[1].score).abs() < f64::EPSILON,
+            "both entrypoint matches should have equal scores, got {} vs {}",
+            res.items[0].score,
+            res.items[1].score
+        );
+
+        // Third result should score strictly lower than the tied entrypoints
+        assert!(
+            res.items[1].score > res.items[2].score,
+            "entrypoint score ({}) should exceed non-entrypoint ({})",
+            res.items[1].score,
+            res.items[2].score
+        );
 
         // Third should be the exact filename match prefix
         assert_eq!(res.items[2].relative_path, "src/domain/main_service.rs");

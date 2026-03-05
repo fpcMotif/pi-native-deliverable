@@ -1,5 +1,6 @@
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 /// Black-box RPC smoke test.
 /// Requires the `pi` binary to support `--mode rpc` and line-delimited JSON.
@@ -8,7 +9,6 @@ use std::process::{Command, Stdio};
 /// It should run against the built-in mock provider (feature: `mock-llm`) in CI.
 #[test]
 fn rpc_smoke_prompt_and_events() {
-    // Spawn `pi --mode rpc`
     let mut child = Command::new(env!("CARGO_BIN_EXE_pi"))
         .args([
             "--mode",
@@ -27,7 +27,6 @@ fn rpc_smoke_prompt_and_events() {
     let stdin = child.stdin.as_mut().expect("stdin");
     let stdout = child.stdout.take().expect("stdout");
 
-    // Send a prompt
     writeln!(
         stdin,
         r#"{{"v":"1.0.0","type":"prompt","id":"req-1","message":"List files in current directory using tools."}}"#
@@ -38,8 +37,11 @@ fn rpc_smoke_prompt_and_events() {
     let mut saw_ready = false;
     let mut saw_message_update = false;
 
-    // Read up to N lines looking for expected event types
-    for _ in 0..200 {
+    let timeout = Duration::from_secs(10);
+    let deadline = Instant::now() + timeout;
+
+    // Read lines until we see expected events or timeout
+    while Instant::now() < deadline {
         let mut line = String::new();
         if reader.read_line(&mut line).unwrap_or(0) == 0 {
             break;
@@ -59,15 +61,12 @@ fn rpc_smoke_prompt_and_events() {
         }
     }
 
-    // Ensure the process exits cleanly when we abort (optional in MVP)
-    // writeln!(stdin, r#"{"v":"1.0.0","type":"abort"}"#).ok();
-
     let _ = child.kill();
     let _ = child.wait();
 
-    assert!(saw_ready, "expected a ready event");
+    assert!(saw_ready, "expected a ready event within {timeout:?}");
     assert!(
         saw_message_update,
-        "expected at least one message_update event"
+        "expected at least one message_update event within {timeout:?}"
     );
 }
