@@ -63,11 +63,15 @@ fn tool_policy_blocks_binary_read() {
         name: "read".to_string(),
         args: json!({
             "path": "binary.bin",
+            "max_bytes": 100,
         }),
     };
 
     let res = tool.execute(&call, &policy, tmp.path());
-    assert!(matches!(res, Err(ToolError::Denied(msg)) if msg.contains("binary")));
+    match res {
+        Err(ToolError::Denied(msg)) => assert!(msg.contains("binary"), "Expected denied message to contain 'binary', got: {}", msg),
+        other => panic!("Expected ToolError::Denied, got {:?}", other),
+    }
 }
 
 #[test]
@@ -92,3 +96,4 @@ fn bash_dangerous_command_detector_is_stable() {
     assert!(is_dangerous_command("mkfs /dev/sda"));
     assert!(is_dangerous_command(":(){ :|:& };:"));
     assert!(!is_dangerous_command("echo safe"));
+}
