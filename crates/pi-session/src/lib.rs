@@ -214,15 +214,15 @@ impl SessionStore {
         }
 
         let temp_path = target.with_extension("tmp");
-        fs::write(&temp_path, lines.as_bytes())?;
-        if target.exists() {
-            fs::remove_file(&target)?;
+        tokio::fs::write(&temp_path, lines.as_bytes()).await?;
+        if tokio::fs::try_exists(&target).await.unwrap_or(false) {
+            tokio::fs::remove_file(&target).await?;
         }
-        fs::rename(&temp_path, &target)?;
+        tokio::fs::rename(&temp_path, &target).await?;
 
         if target != self.path {
             // keep canonical compact copy and continue using source path.
-            fs::copy(&target, &self.path)?;
+            tokio::fs::copy(&target, &self.path).await?;
         }
 
         Ok(self.log.entries.len())
