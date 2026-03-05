@@ -607,3 +607,39 @@ pub fn decode_token(token: &str) -> SearchResult<usize> {
     );
     Ok(value.try_into().map_err(|_| SearchError::InvalidToken("token overflow".to_string()))?)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_decode_token_invalid_base64() {
+        let result = decode_token("invalid_base64!");
+        assert!(matches!(result, Err(SearchError::InvalidToken(_))));
+        if let Err(SearchError::InvalidToken(msg)) = result {
+            // Check that the error contains "Invalid" since the base64 error format varies slightly.
+            // Expected something like: "Invalid byte 33, offset 14."
+            assert!(msg.to_lowercase().contains("invalid"));
+        }
+    }
+
+    #[test]
+    fn test_decode_token_invalid_length() {
+        // Provide a valid base64 string, but incorrect length (e.g. 4 bytes instead of 8)
+        let token = STANDARD.encode(&[0u8, 1, 2, 3]);
+        let result = decode_token(&token);
+        assert!(matches!(result, Err(SearchError::InvalidToken(_))));
+        if let Err(SearchError::InvalidToken(msg)) = result {
+            assert_eq!(msg, "token payload size mismatch");
+        }
+    }
+
+    #[test]
+    fn test_decode_token_valid() {
+        let expected_index = 42;
+        let token = encode_token(expected_index);
+        let result = decode_token(&token);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), expected_index);
+    }
+}
