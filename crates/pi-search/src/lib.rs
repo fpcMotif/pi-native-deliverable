@@ -401,7 +401,11 @@ impl SearchService {
                     }
                     GrepMode::Fuzzy => {
                         lower_line.clear();
-                        lower_line.extend(line.chars().flat_map(|c| c.to_lowercase()));
+                        for c in line.chars() {
+                            for lc in c.to_lowercase() {
+                                lower_line.push(lc);
+                            }
+                        }
                         normalized_levenshtein(&lower_line, &lower) >= 0.72
                     }
                 };
