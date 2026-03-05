@@ -302,7 +302,7 @@ impl Tool for ReadTool {
         let mut bytes = Vec::new();
         fs::File::open(&normalized)?.read_to_end(&mut bytes)?;
         if bytes.iter().any(|byte| *byte == 0) {
-            return Err(ToolError::denied("refusing to read binary file"));
+            return Err(ToolError::Denied("refusing to read binary file".to_string()));
         }
 
         let (stdout, truncated) = take_max(String::from_utf8_lossy(&bytes).to_string(), max);
