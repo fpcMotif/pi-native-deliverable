@@ -367,7 +367,7 @@ impl SearchService {
 
         let lower = pattern.to_lowercase();
         for entry in index.iter() {
-            if !Path::new(&entry.relative_path).starts_with(scope) {
+            if !scope_is_prefix(&entry.relative_path, scope) {
                 continue;
             }
 
@@ -486,7 +486,7 @@ fn matches_scope(entry: &IndexedFile, scope: Option<&str>) -> bool {
             if scope == "." {
                 true
             } else {
-                Path::new(&entry.relative_path).starts_with(scope)
+                scope_is_prefix(&entry.relative_path, scope)
             }
         }
         None => true,
@@ -507,7 +507,7 @@ fn matches_filters(entry: &IndexedFile, filters: &[SearchFilter], query: &str) -
         let scope_ok = filter
             .path_prefix
             .as_ref()
-            .is_none_or(|prefix| Path::new(&entry.relative_path).starts_with(prefix));
+            .is_none_or(|prefix| scope_is_prefix(&entry.relative_path, prefix));
         if !ext_ok || !scope_ok {
             return false;
         }
@@ -606,4 +606,13 @@ pub fn decode_token(token: &str) -> SearchResult<usize> {
             .map_err(|_| SearchError::InvalidToken("invalid token payload".to_string()))?,
     );
     Ok(value.try_into().map_err(|_| SearchError::InvalidToken("token overflow".to_string()))?)
+}
+
+fn scope_is_prefix(path: &str, scope: &str) -> bool {
+    let normalized_scope = if scope.ends_with('/') {
+        &scope[..scope.len() - 1]
+    } else {
+        scope
+    };
+    Path::new(path).starts_with(normalized_scope)
 }
