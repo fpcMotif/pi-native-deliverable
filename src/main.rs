@@ -159,7 +159,7 @@ async fn run_protocol_schema(out: PathBuf) {
 
     #[cfg(not(feature = "protocol-schema"))]
     {
-        let _ = tokio_io::write_all(
+        let _ = tokio_io::AsyncWriteExt::write_all(
             &mut tokio_io::stdout(),
             b"{\"error\":\"protocol-schema feature is disabled\"}",
         )

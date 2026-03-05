@@ -1,0 +1,10 @@
+<<<<<<< SEARCH
+    let res = tool.execute(&call, &policy, tmp.path());
+    assert!(matches!(res, Err(ToolError::Denied(msg)) if msg.contains("binary")));
+}
+=======
+    let res = tool.execute(&call, &policy, tmp.path());
+    println!("{:?}", res);
+    assert!(matches!(res, Err(ToolError::Denied(msg)) if msg.contains("binary")));
+}
+>>>>>>> REPLACE

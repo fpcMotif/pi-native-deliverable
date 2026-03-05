@@ -242,7 +242,7 @@ impl Agent {
                 role: "user".to_string(),
                 content: message,
             }],
-            tools: self.config.tool_registry.list().iter().map(|tool| tool.name.clone()).collect(),
+            tools: self.config.tool_registry.list_names(),
             stream: true,
             temperature: 0.2,
             metadata: Default::default(),
