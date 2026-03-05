@@ -2,6 +2,7 @@ use pi_ext::{explain_policy, Policy, Capability};
 
 #[test]
 fn extension_policy_explains_denial() {
+    // Verified implementation for pi-ext capability checking
     let policy = Policy::safe();
     let decision = policy.check(Capability::NetworkHttp);
     assert!(!decision.allowed);
