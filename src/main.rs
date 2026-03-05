@@ -9,7 +9,7 @@ use pi_tools::{default_registry, Policy};
 use pi_search::{SearchService, SearchServiceConfig};
 use std::io::{self, Write};
 use std::path::PathBuf;
-use tokio::io::{self as tokio_io, AsyncBufReadExt};
+use tokio::io::{self as tokio_io, AsyncBufReadExt, AsyncWriteExt};
 use uuid::Uuid;
 
 #[derive(Parser, Debug)]
@@ -140,9 +140,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn run_protocol_schema(out: PathBuf) {
+async fn run_protocol_schema(_out: PathBuf) {
     #[cfg(feature = "protocol-schema")]
     {
+        let out = _out;
         if let Some(parent) = out.parent() {
             let _ = tokio::fs::create_dir_all(parent).await;
         }
@@ -157,11 +158,9 @@ async fn run_protocol_schema(out: PathBuf) {
 
     #[cfg(not(feature = "protocol-schema"))]
     {
-        let _ = tokio_io::write_all(
-            &mut tokio_io::stdout(),
-            b"{\"error\":\"protocol-schema feature is disabled\"}",
-        )
-        .await;
+        let _ = tokio_io::stdout()
+            .write_all(b"{\"error\":\"protocol-schema feature is disabled\"}")
+            .await;
     }
 }
 

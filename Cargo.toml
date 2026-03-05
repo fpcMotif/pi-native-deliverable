@@ -51,11 +51,12 @@ pi-llm = { path = "crates/pi-llm", default-features = false, features = ["openai
 serde_json.workspace = true
 uuid.workspace = true
 
+[dev-dependencies]
+tempfile = "3.17"
+pi-ext = { path = "crates/pi-ext" }
+
 [features]
 default = ["mock-llm", "openai"]
 mock-llm = ["pi-llm/mock-llm"]
 openai = ["pi-llm/openai"]
 protocol-schema = ["pi-protocol/schema"]
-
-[dev-dependencies]
-tempfile = "3.17"

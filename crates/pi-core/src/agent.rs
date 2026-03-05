@@ -45,7 +45,7 @@ impl CommandBus {
 }
 
 #[derive(Debug)]
-enum Command {
+pub enum Command {
     Prompt(ClientRequest),
     Steer(ClientRequest),
     FollowUp(ClientRequest),
@@ -418,6 +418,7 @@ impl Agent {
 
 struct ToolCallResultOutput {
     tool_name: String,
+    #[allow(dead_code)]
     call_id: String,
     result: ToolCallResult,
 }
