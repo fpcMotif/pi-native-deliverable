@@ -754,3 +754,4 @@ pub fn is_dangerous_command(command: &str) -> bool {
     let low = command.to_lowercase();
     low.contains("rm -rf") || low.contains("mkfs") || low.contains(":(){ :|:& };:")
 }
+mod bash_test;
