@@ -187,10 +187,25 @@ impl Policy {
     }
 
     pub fn can_write_path(&self, path: &Path) -> bool {
-        path.components().any(|component| {
+        !path.components().any(|component| {
             if let Component::Normal(component) = component {
-                let value = OsStr::to_string_lossy(component);
-                self.deny_write_paths.iter().any(|deny| deny == value.as_ref())
+                let value = OsStr::to_string_lossy(component).to_lowercase();
+
+                // Check direct matches from the deny list
+                if self.deny_write_paths.iter().any(|deny| deny.to_lowercase() == value) {
+                    return true;
+                }
+
+                // Additional sensitive patterns
+                if value == ".git" || value == ".ssh" || value == ".aws" {
+                    return true;
+                }
+
+                if value.starts_with(".env") || value.starts_with("id_") {
+                    return true;
+                }
+
+                false
             } else {
                 false
             }
@@ -295,7 +310,8 @@ impl Tool for ReadTool {
 
     fn execute(&self, call: &ToolCall, policy: &Policy, cwd: &Path) -> Result<ToolCallResult> {
         let path = read_arg::<String>(call, "path")?;
-        let max = read_arg::<Option<u64>>(call, "max_bytes")?
+        let max = call.args.get("max_bytes")
+            .and_then(Value::as_u64)
             .unwrap_or(policy.max_file_size as u64) as usize;
 
         let normalized = policy.canonicalize_path(&path, cwd)?;
@@ -355,7 +371,7 @@ impl Tool for WriteTool {
         }
 
         let normalized = policy.canonicalize_path(&path, cwd)?;
-        if policy.can_write_path(&normalized) {
+        if !policy.can_write_path(&normalized) {
             return Err(ToolError::denied(format!("writing denied: {}", normalized.display())));
         }
 
@@ -416,7 +432,7 @@ impl Tool for EditTool {
         let to = read_arg::<String>(call, "to")?;
 
         let normalized = policy.canonicalize_path(&path, cwd)?;
-        if policy.can_write_path(&normalized) {
+        if !policy.can_write_path(&normalized) {
             return Err(ToolError::denied(format!("editing denied: {}", normalized.display())));
         }
 

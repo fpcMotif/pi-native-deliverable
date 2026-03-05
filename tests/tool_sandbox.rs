@@ -71,6 +71,39 @@ fn tool_policy_blocks_binary_read() {
 }
 
 #[test]
+fn tool_policy_denies_sensitive_paths() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let policy = Policy::safe_defaults(tmp.path());
+
+    // Explicit deny list
+    assert!(!policy.can_write_path(Path::new(".env")));
+    assert!(!policy.can_write_path(Path::new(".bash_history")));
+    assert!(!policy.can_write_path(Path::new("id_rsa")));
+    assert!(!policy.can_write_path(Path::new("id_rsa.pub")));
+
+    // Case insensitivity
+    assert!(!policy.can_write_path(Path::new(".ENV")));
+    assert!(!policy.can_write_path(Path::new("ID_RSA")));
+
+    // Prefixes
+    assert!(!policy.can_write_path(Path::new(".env.development")));
+    assert!(!policy.can_write_path(Path::new(".env.test")));
+    assert!(!policy.can_write_path(Path::new("id_ed25519")));
+    assert!(!policy.can_write_path(Path::new("id_ecdsa")));
+
+    // Directories
+    assert!(!policy.can_write_path(Path::new(".git/config")));
+    assert!(!policy.can_write_path(Path::new(".ssh/authorized_keys")));
+    assert!(!policy.can_write_path(Path::new(".aws/credentials")));
+
+    // Allowed paths
+    assert!(policy.can_write_path(Path::new("src/main.rs")));
+    assert!(policy.can_write_path(Path::new("Cargo.toml")));
+    assert!(policy.can_write_path(Path::new("env_var.txt")));
+    assert!(policy.can_write_path(Path::new("idea.txt")));
+}
+
+#[test]
 fn bash_dangerous_command_is_blocked() {
     let policy = Policy::safe_defaults(Path::new("/tmp"));
     let tool = BashTool;
@@ -92,3 +125,4 @@ fn bash_dangerous_command_detector_is_stable() {
     assert!(is_dangerous_command("mkfs /dev/sda"));
     assert!(is_dangerous_command(":(){ :|:& };:"));
     assert!(!is_dangerous_command("echo safe"));
+}
