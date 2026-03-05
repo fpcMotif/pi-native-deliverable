@@ -294,11 +294,23 @@ pub mod openai {
                                                 .and_then(|value| value.get("name"))
                                                 .and_then(Value::as_str)
                                                 .unwrap_or("unknown");
-                                            let args = tool_call
+                                            let args = match tool_call
                                                 .get("function")
                                                 .and_then(|value| value.get("arguments"))
                                                 .cloned()
-                                                .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+                                            {
+                                                Some(args) => args,
+                                                None => {
+                                                    out.push(ProviderEvent::Error {
+                                                        request_id: request_id_for_events.clone(),
+                                                        message: format!(
+                                                            "missing arguments for tool call {}",
+                                                            fn_name
+                                                        ),
+                                                    });
+                                                    continue;
+                                                }
+                                            };
                                             out.push(ProviderEvent::ToolCall {
                                                 request_id: request_id_for_events.clone(),
                                                 tool_name: fn_name.to_string(),
