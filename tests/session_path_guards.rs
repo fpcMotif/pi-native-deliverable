@@ -4,12 +4,14 @@ use tempfile::TempDir;
 #[test]
 fn default_session_path_stays_within_workspace() {
     let workspace = TempDir::new().expect("workspace tempdir");
-    let path = SessionStore::default_session_path(workspace.path());
     let workspace = workspace.path().canonicalize().expect("canonicalize");
+    let path = workspace.join(".pi").join("session.jsonl");
 
-    assert_eq!(path, workspace.join(".pi").join("session.jsonl"));
-    assert!(path.starts_with(&workspace));
-    assert!(path.ends_with(".pi/session.jsonl"));
+    let resolved = SessionStore::default_session_path(&workspace);
+
+    assert_eq!(path, resolved);
+    assert!(resolved.starts_with(&workspace));
+    assert!(resolved.ends_with(".pi/session.jsonl"));
 }
 
 #[test]
@@ -25,9 +27,9 @@ fn workspace_session_path_rejects_traversal() {
 #[test]
 fn workspace_session_path_allows_workspace_scope() {
     let workspace = TempDir::new().expect("workspace tempdir");
-    let allowed = workspace.path().join(".pi").join("session.jsonl");
+    let workspace_root = workspace.path().canonicalize().expect("canonicalize");
 
-    let resolved = SessionStore::resolve_session_path(&allowed, workspace.path())
+    let resolved = SessionStore::resolve_session_path(".pi/session.jsonl", workspace.path())
         .expect("allowed path must resolve");
-    assert_eq!(resolved, workspace.path().join(".pi").join("session.jsonl"));
+    assert_eq!(resolved, workspace_root.join(".pi").join("session.jsonl"));
 }

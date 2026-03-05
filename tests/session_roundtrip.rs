@@ -1,6 +1,4 @@
 use std::fs;
-use std::path::PathBuf;
-
 /// Session JSONL roundtrip should preserve semantics.
 /// This test assumes `pi-protocol` exposes `SessionLog` types and `normalize()` helper.
 #[test]

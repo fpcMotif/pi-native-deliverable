@@ -103,44 +103,50 @@ impl Provider for MockProvider {
         }])
     }
 
-    fn stream(&self, request: CompletionRequest, request_id: Option<String>) -> BoxStream<'static, ProviderEvent> {
+    fn stream(
+        &self,
+        request: CompletionRequest,
+        request_id: Option<String>,
+    ) -> BoxStream<'static, ProviderEvent> {
         let prompt = request.user_prompt().unwrap_or_default().to_string();
         let prompt_lc = prompt.to_lowercase();
         let model = request.model.clone();
 
-        let events = if prompt_lc.contains("ls") || prompt_lc.contains("find") || prompt_lc.contains("grep") {
-            vec![
-                ProviderEvent::TextDelta {
-                    request_id: request_id.clone(),
-                    text: "Scanning workspace via tools…\n".to_string(),
-                },
-                ProviderEvent::ToolCall {
-                    request_id: request_id.clone(),
-                    tool_name: "find".to_string(),
-                    args: serde_json::json!({ "query": "src", "limit": 20 }),
-                },
-                ProviderEvent::Done {
+        let events =
+            if prompt_lc.contains("ls") || prompt_lc.contains("find") || prompt_lc.contains("grep")
+            {
+                vec![
+                    ProviderEvent::TextDelta {
+                        request_id: request_id.clone(),
+                        text: "Scanning workspace via tools…\n".to_string(),
+                    },
+                    ProviderEvent::ToolCall {
+                        request_id: request_id.clone(),
+                        tool_name: "find".to_string(),
+                        args: serde_json::json!({ "query": "src", "limit": 20 }),
+                    },
+                    ProviderEvent::Done {
+                        request_id,
+                        stop_reason: "complete".to_string(),
+                    },
+                ]
+            } else if model == "silent" {
+                vec![ProviderEvent::Done {
                     request_id,
                     stop_reason: "complete".to_string(),
-                },
-            ]
-        } else if model == "silent" {
-            vec![ProviderEvent::Done {
-                request_id,
-                stop_reason: "complete".to_string(),
-            }]
-        } else {
-            vec![
-                ProviderEvent::TextDelta {
-                    request_id: request_id.clone(),
-                    text: format!("Mock response: {prompt}"),
-                },
-                ProviderEvent::Done {
-                    request_id,
-                    stop_reason: "complete".to_string(),
-                },
-            ]
-        };
+                }]
+            } else {
+                vec![
+                    ProviderEvent::TextDelta {
+                        request_id: request_id.clone(),
+                        text: format!("Mock response: {prompt}"),
+                    },
+                    ProviderEvent::Done {
+                        request_id,
+                        stop_reason: "complete".to_string(),
+                    },
+                ]
+            };
 
         Box::pin(stream::iter(events))
     }
@@ -151,7 +157,7 @@ pub mod openai {
     use super::*;
     use futures::StreamExt;
     use reqwest::Client;
-    use serde_json::{Value, json};
+    use serde_json::{json, Value};
 
     #[derive(Debug, Clone)]
     pub struct OpenAIProvider {
@@ -182,7 +188,11 @@ pub mod openai {
             }])
         }
 
-        fn stream(&self, request: CompletionRequest, request_id: Option<String>) -> BoxStream<'static, ProviderEvent> {
+        fn stream(
+            &self,
+            request: CompletionRequest,
+            request_id: Option<String>,
+        ) -> BoxStream<'static, ProviderEvent> {
             let base_url = self.base_url.clone();
             let api_key = self.api_key.clone();
             let request_id_for_events = request_id.clone();
@@ -279,7 +289,9 @@ pub mod openai {
                                     .and_then(|items| items.first())
                                     .and_then(|item| item.get("delta"))
                                 {
-                                    if let Some(text) = choice.get("content").and_then(Value::as_str) {
+                                    if let Some(text) =
+                                        choice.get("content").and_then(Value::as_str)
+                                    {
                                         if !text.is_empty() {
                                             out.push(ProviderEvent::TextDelta {
                                                 request_id: request_id_for_events.clone(),
@@ -287,7 +299,9 @@ pub mod openai {
                                             });
                                         }
                                     }
-                                    if let Some(tool_calls) = choice.get("tool_calls").and_then(Value::as_array) {
+                                    if let Some(tool_calls) =
+                                        choice.get("tool_calls").and_then(Value::as_array)
+                                    {
                                         for tool_call in tool_calls {
                                             let fn_name = tool_call
                                                 .get("function")
@@ -298,7 +312,9 @@ pub mod openai {
                                                 .get("function")
                                                 .and_then(|value| value.get("arguments"))
                                                 .cloned()
-                                                .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+                                                .unwrap_or_else(|| {
+                                                    Value::Object(serde_json::Map::new())
+                                                });
                                             out.push(ProviderEvent::ToolCall {
                                                 request_id: request_id_for_events.clone(),
                                                 tool_name: fn_name.to_string(),
@@ -318,7 +334,10 @@ pub mod openai {
                     }
                 }
 
-                if !out.iter().any(|event| matches!(event, ProviderEvent::Done { .. })) {
+                if !out
+                    .iter()
+                    .any(|event| matches!(event, ProviderEvent::Done { .. }))
+                {
                     out.push(ProviderEvent::Done {
                         request_id: request_id_for_events,
                         stop_reason: "complete".to_string(),
@@ -328,8 +347,7 @@ pub mod openai {
             };
 
             Box::pin(
-                stream::once(async move { stream.await })
-                    .flat_map(|events| stream::iter(events)),
+                stream::once(async move { stream.await }).flat_map(|events| stream::iter(events)),
             )
         }
     }

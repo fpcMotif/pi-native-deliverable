@@ -6,7 +6,7 @@ use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 use strsim::normalized_levenshtein;
@@ -38,6 +38,12 @@ pub enum GrepMode {
     PlainText,
     Regex,
     Fuzzy,
+}
+
+impl Default for GrepMode {
+    fn default() -> Self {
+        Self::PlainText
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,6 +91,12 @@ pub struct SearchResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GrepMatchSpan {
+    pub start: usize,
+    pub end: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GrepMatch {
     pub path: String,
     pub line_number: usize,
@@ -93,6 +105,8 @@ pub struct GrepMatch {
     pub before: Vec<String>,
     pub after: Vec<String>,
     pub context: String,
+    #[serde(default)]
+    pub highlights: Vec<GrepMatchSpan>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,11 +117,28 @@ pub struct GrepStats {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GrepQuery {
+    pub pattern: String,
+    #[serde(default)]
+    pub mode: GrepMode,
+    #[serde(default)]
+    pub scope: String,
+    #[serde(default = "default_limit")]
+    pub limit: usize,
+    #[serde(default)]
+    pub token: Option<String>,
+    #[serde(default)]
+    pub offset: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GrepResponse {
     pub matches: Vec<GrepMatch>,
     pub token: Option<String>,
     pub truncated: bool,
     pub stats: GrepStats,
+    #[serde(default)]
+    pub warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,6 +149,7 @@ pub struct SearchServiceConfig {
     pub grep_line_limit: usize,
     pub use_git_status: bool,
     pub watcher_enabled: bool,
+    pub index_path: Option<PathBuf>,
 }
 
 impl Default for SearchServiceConfig {
@@ -129,6 +161,7 @@ impl Default for SearchServiceConfig {
             grep_line_limit: 300,
             use_git_status: true,
             watcher_enabled: true,
+            index_path: None,
         }
     }
 }
@@ -158,7 +191,11 @@ impl SearchService {
             git_index: RwLock::new(HashMap::new()),
         });
 
-        service.rebuild_index().await?;
+        if !service.load_index().await {
+            service.rebuild_index().await?;
+            service.save_index().await.ok();
+        }
+
         if service.config.use_git_status {
             service.refresh_git_status().await?;
         }
@@ -175,56 +212,65 @@ impl SearchService {
         let root = self.config.workspace_root.clone();
 
         let mut walker = WalkBuilder::new(&root);
-        walker.hidden(false).git_ignore(true).parents(true).build().for_each(|result| {
-            let entry = match result {
-                Ok(value) => value,
-                Err(_) => return,
-            };
-            let path = entry.path();
-            if !path.is_file() {
-                return;
-            }
+        walker
+            .hidden(false)
+            .git_ignore(true)
+            .parents(true)
+            .build()
+            .for_each(|result| {
+                let entry = match result {
+                    Ok(value) => value,
+                    Err(_) => return,
+                };
+                let path = entry.path();
+                if !path.is_file() {
+                    return;
+                }
 
-            let metadata = match path.metadata() {
-                Ok(value) => value,
-                Err(_) => return,
-            };
-            if metadata.len() > self.config.max_file_size {
-                return;
-            }
+                let metadata = match path.metadata() {
+                    Ok(value) => value,
+                    Err(_) => return,
+                };
+                if metadata.len() > self.config.max_file_size {
+                    return;
+                }
 
-            let relative = path
-                .strip_prefix(&root)
-                .unwrap_or(path)
-                .to_string_lossy()
-                .to_string();
-            if should_ignore_path(&relative) {
-                return;
-            }
+                let relative = path
+                    .strip_prefix(&root)
+                    .unwrap_or(path)
+                    .to_string_lossy()
+                    .to_string();
+                if should_ignore_path(&relative) {
+                    return;
+                }
 
-            let modified_ms = metadata
-                .modified()
-                .unwrap_or_else(|_| SystemTime::now())
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
+                let modified_ms = metadata
+                    .modified()
+                    .unwrap_or_else(|_| SystemTime::now())
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
 
-            let frecency = self
-                .git_index
-                .try_read()
-                .ok()
-                .map(|map| map.get(path).map(|status| status_to_frecency(status)).unwrap_or(0))
-                .unwrap_or(0);
+                let frecency = self
+                    .git_index
+                    .try_read()
+                    .ok()
+                    .map(|map| {
+                        map.get(path)
+                            .map(|status| status_to_frecency(status))
+                            .unwrap_or(0)
+                    })
+                    .unwrap_or(0);
 
-            items.push(IndexedFile {
-                relative_path: relative,
-                absolute_path: path.to_path_buf(),
-                size_bytes: metadata.len(),
-                mtime_ms: modified_ms,
-                frecency,
-                git_status: None,
+                items.push(IndexedFile {
+                    relative_path: relative,
+                    absolute_path: path.to_path_buf(),
+                    size_bytes: metadata.len(),
+                    mtime_ms: modified_ms,
+                    frecency,
+                    git_status: None,
+                });
             });
-        });
 
         items.sort_by(|left, right| {
             left.relative_path
@@ -234,6 +280,31 @@ impl SearchService {
 
         let mut index = self.index.write().await;
         *index = items;
+        Ok(())
+    }
+
+    pub async fn load_index(&self) -> bool {
+        if let Some(path) = &self.config.index_path {
+            if let Ok(bytes) = tokio::fs::read(path).await {
+                if let Ok(items) = serde_json::from_slice::<Vec<IndexedFile>>(&bytes) {
+                    *self.index.write().await = items;
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    pub async fn save_index(&self) -> SearchResult<()> {
+        if let Some(path) = &self.config.index_path {
+            if let Some(parent) = path.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+            let index = self.index.read().await;
+            if let Ok(json) = serde_json::to_string(&*index) {
+                tokio::fs::write(path, json).await?;
+            }
+        }
         Ok(())
     }
 
@@ -260,6 +331,7 @@ impl SearchService {
                     match event.kind {
                         EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {
                             service.rebuild_index().await.ok();
+                            service.save_index().await.ok();
                             if service.config.use_git_status {
                                 service.refresh_git_status().await.ok();
                             }
@@ -341,7 +413,11 @@ impl SearchService {
             None
         };
 
-        Ok(SearchResponse { items, token, stats })
+        Ok(SearchResponse {
+            items,
+            token,
+            stats,
+        })
     }
 
     pub async fn grep(
@@ -351,23 +427,67 @@ impl SearchService {
         scope: &str,
         limit: usize,
     ) -> SearchResult<GrepResponse> {
+        self.grep_query(GrepQuery {
+            pattern: pattern.to_string(),
+            mode,
+            scope: scope.to_string(),
+            limit,
+            token: None,
+            offset: 0,
+        })
+        .await
+    }
+
+    pub async fn grep_query(&self, query: GrepQuery) -> SearchResult<GrepResponse> {
         let index = self.index.read().await;
+        let limit = query.limit.max(1).min(self.config.grep_line_limit);
+        let start = query
+            .token
+            .as_deref()
+            .map(decode_token)
+            .transpose()?
+            .unwrap_or(query.offset);
+
+        enum Matcher {
+            Regex(Regex),
+            Fuzzy,
+        }
+
+        let mut warning = None;
+        let matcher = match query.mode {
+            GrepMode::Fuzzy => Matcher::Fuzzy,
+            GrepMode::PlainText => Matcher::Regex(
+                regex::RegexBuilder::new(&regex::escape(&query.pattern))
+                    .case_insensitive(true)
+                    .build()?,
+            ),
+            GrepMode::Regex => match Regex::new(&query.pattern) {
+                Ok(regex) => Matcher::Regex(regex),
+                Err(err) => {
+                    warning = Some(format!(
+                        "invalid regex pattern: {err}. Falling back to plain text matching."
+                    ));
+                    Matcher::Regex(
+                        regex::RegexBuilder::new(&regex::escape(&query.pattern))
+                            .case_insensitive(true)
+                            .build()?,
+                    )
+                }
+            },
+        };
+
+        let lower = query.pattern.to_lowercase();
         let mut matches = Vec::new();
+        let required = start.saturating_add(limit).saturating_add(1);
+        let mut has_more = false;
         let mut stats = GrepStats {
             scanned_files: 0,
             total_matches: 0,
             matched_files: 0,
         };
 
-        let regex = if let GrepMode::Regex = mode {
-            Some(Regex::new(pattern)?)
-        } else {
-            None
-        };
-
-        let lower = pattern.to_lowercase();
         for entry in index.iter() {
-            if !entry.relative_path.starts_with(scope) {
+            if !scope_is_prefix(&entry.relative_path, &query.scope) {
                 continue;
             }
 
@@ -384,23 +504,24 @@ impl SearchService {
             let lines: Vec<&str> = text.lines().collect();
 
             let mut file_matched = false;
-            for (line_idx, line) in lines.iter().enumerate() {
-                if matches.len() >= limit || matches.len() >= self.config.grep_line_limit {
-                    break;
-                }
+            let mut byte_offset = 0usize;
 
-                let matched = match mode {
-                    GrepMode::PlainText => line.to_lowercase().contains(&lower),
-                    GrepMode::Regex => {
-                        let regex = regex.as_ref().expect("regex");
-                        regex.is_match(line)
-                    }
-                    GrepMode::Fuzzy => {
-                        normalized_levenshtein(&line.to_lowercase(), &lower) >= 0.72
+            for (line_idx, line) in lines.iter().enumerate() {
+                let line_match_spans = match &matcher {
+                    Matcher::Regex(regex) => collect_match_spans(line, regex),
+                    Matcher::Fuzzy => {
+                        let line_lower = line.to_lowercase();
+                        let line_match = normalized_levenshtein(&line_lower, &lower) >= 0.72;
+                        if line_match {
+                            collect_fuzzy_spans(line, &query.pattern)
+                        } else {
+                            Vec::new()
+                        }
                     }
                 };
 
-                if !matched {
+                if line_match_spans.is_empty() {
+                    byte_offset += line.len() + 1;
                     continue;
                 }
 
@@ -416,7 +537,6 @@ impl SearchService {
                     .take(2)
                     .map(|line| (*line).to_string())
                     .collect::<Vec<_>>();
-                let byte_offset: usize = lines.iter().take(line_idx).map(|line| line.len() + 1).sum();
 
                 matches.push(GrepMatch {
                     path: entry.relative_path.clone(),
@@ -426,27 +546,50 @@ impl SearchService {
                     before,
                     after,
                     context: format!("{}:{}", entry.relative_path, line_idx + 1),
+                    highlights: line_match_spans,
                 });
 
                 file_matched = true;
-                stats.total_matches += 1;
+                if matches.len() >= required {
+                    has_more = true;
+                    break;
+                }
+                byte_offset += line.len() + 1;
             }
 
             if file_matched {
                 stats.matched_files += 1;
             }
 
-            if matches.len() >= limit || matches.len() >= self.config.grep_line_limit {
+            if has_more {
                 break;
             }
         }
 
-        let truncated = matches.len() >= limit || matches.len() >= self.config.grep_line_limit;
+        matches.sort_by(|left, right| {
+            left.path
+                .cmp(&right.path)
+                .then(left.line_number.cmp(&right.line_number))
+                .then(left.byte_offset.cmp(&right.byte_offset))
+                .then(left.line.cmp(&right.line))
+        });
+
+        let max = (start.saturating_add(limit)).min(matches.len());
+        let page = matches.get(start..max).unwrap_or_default().to_vec();
+        let truncated = if max < matches.len() { true } else { has_more };
+        let token = if truncated {
+            Some(encode_token(max))
+        } else {
+            None
+        };
+        stats.total_matches = matches.len();
+
         Ok(GrepResponse {
-            matches,
-            token: None,
+            matches: page,
+            token,
             truncated,
             stats,
+            warning,
         })
     }
 
@@ -481,17 +624,7 @@ impl SearchService {
 }
 
 fn matches_scope(entry: &IndexedFile, scope: Option<&str>) -> bool {
-    match scope {
-        Some(scope) if !scope.is_empty() => {
-            if scope == "." {
-                true
-            } else {
-                entry.relative_path.starts_with(scope)
-            }
-        }
-        None => true,
-        Some(_) => true,
-    }
+    scope.is_none_or(|scope| scope_is_prefix(&entry.relative_path, scope))
 }
 
 fn matches_filters(entry: &IndexedFile, filters: &[SearchFilter], query: &str) -> bool {
@@ -507,12 +640,95 @@ fn matches_filters(entry: &IndexedFile, filters: &[SearchFilter], query: &str) -
         let scope_ok = filter
             .path_prefix
             .as_ref()
-            .is_none_or(|prefix| entry.relative_path.starts_with(prefix));
+            .is_none_or(|prefix| scope_is_prefix(&entry.relative_path, prefix));
         if !ext_ok || !scope_ok {
             return false;
         }
     }
     true
+}
+
+fn scope_is_prefix(path: &str, scope: &str) -> bool {
+    let trimmed = scope.trim().trim_end_matches('/');
+    if trimmed.is_empty() || trimmed == "." {
+        return true;
+    }
+
+    let mut normalized_scope = PathBuf::new();
+    for component in Path::new(trimmed).components() {
+        match component {
+            Component::Normal(part) => normalized_scope.push(part),
+            Component::RootDir => normalized_scope.push(component.as_os_str()),
+            Component::Prefix(_) => normalized_scope.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => return false,
+        }
+    }
+
+    if normalized_scope.as_os_str().is_empty() {
+        return true;
+    }
+
+    Path::new(path).starts_with(&normalized_scope)
+}
+
+fn collect_match_spans(line: &str, regex: &Regex) -> Vec<GrepMatchSpan> {
+    regex
+        .find_iter(line)
+        .map(|capture| GrepMatchSpan {
+            start: capture.start(),
+            end: capture.end(),
+        })
+        .collect()
+}
+
+fn collect_fuzzy_spans(line: &str, pattern: &str) -> Vec<GrepMatchSpan> {
+    let line_lower = line.to_lowercase();
+    let pattern_lower = pattern.to_lowercase();
+    line_lower
+        .find(&pattern_lower)
+        .map(|start| {
+            vec![GrepMatchSpan {
+                start,
+                end: start + pattern_lower.len(),
+            }]
+        })
+        .unwrap_or_else(|| {
+            if line.is_empty() {
+                Vec::new()
+            } else {
+                vec![GrepMatchSpan {
+                    start: 0,
+                    end: line.len(),
+                }]
+            }
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scope_is_prefix;
+
+    #[test]
+    fn scope_prefix_matches_components_not_prefix_fragments() {
+        assert!(scope_is_prefix("foo/bar/baz.txt", "foo"));
+        assert!(scope_is_prefix("foo/bar/baz.txt", "foo/"));
+        assert!(scope_is_prefix("foo/bar/baz.txt", "foo/bar"));
+        assert!(!scope_is_prefix("foo-secret/bar.txt", "foo"));
+    }
+
+    #[test]
+    fn scope_prefix_rejects_parent_directory_segments() {
+        assert!(!scope_is_prefix("other/bar.txt", "../other"));
+        assert!(!scope_is_prefix("foo/bar.txt", "foo/../foo"));
+    }
+
+    #[test]
+    fn scope_is_prefix_supports_special_inputs() {
+        assert!(scope_is_prefix("any/path.txt", "."));
+        assert!(scope_is_prefix("any/path.txt", ""));
+        assert!(!scope_is_prefix("foo/bar.txt", "baz"));
+    }
 }
 
 fn should_ignore_path(relative: &str) -> bool {
@@ -544,6 +760,8 @@ fn score_filename_bonus(path: &str, query: &str) -> f64 {
         .to_lowercase();
     if filename == query {
         0.6
+    } else if filename.starts_with(query) {
+        0.35
     } else if filename.contains(query) {
         0.25
     } else {
@@ -598,12 +816,16 @@ pub fn decode_token(token: &str) -> SearchResult<usize> {
         .decode(token)
         .map_err(|err| SearchError::InvalidToken(err.to_string()))?;
     if bytes.len() != 8 {
-        return Err(SearchError::InvalidToken("token payload size mismatch".to_string()));
+        return Err(SearchError::InvalidToken(
+            "token payload size mismatch".to_string(),
+        ));
     }
     let value = u64::from_be_bytes(
         bytes
             .try_into()
             .map_err(|_| SearchError::InvalidToken("invalid token payload".to_string()))?,
     );
-    Ok(value.try_into().map_err(|_| SearchError::InvalidToken("token overflow".to_string()))?)
+    Ok(value
+        .try_into()
+        .map_err(|_| SearchError::InvalidToken("token overflow".to_string()))?)
 }

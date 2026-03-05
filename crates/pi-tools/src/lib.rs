@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use pi_search::{GrepMode, SearchQuery, SearchService};
+use pi_search::{GrepMode, GrepQuery, SearchQuery, SearchService};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -23,7 +23,7 @@ pub struct ToolCall {
     pub args: Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ToolStatus {
     Ok,
@@ -48,6 +48,16 @@ pub struct ToolCallResult {
     pub error: Option<String>,
     pub truncated: bool,
     pub metadata: BTreeMap<String, Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolAuditRecord {
+    pub call_id: String,
+    pub tool: String,
+    pub allowed: bool,
+    pub rule_id: String,
+    pub status: ToolStatus,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -79,9 +89,50 @@ impl ToolRegistry {
         self.tools.insert(tool.name().to_string(), Box::new(tool));
     }
 
-    pub fn execute(&self, name: &str, call: &ToolCall, policy: &Policy, cwd: &Path) -> Result<ToolCallResult> {
-        let tool = self.tools.get(name).ok_or_else(|| ToolError::not_found(name))?;
+    pub fn execute(
+        &self,
+        name: &str,
+        call: &ToolCall,
+        policy: &Policy,
+        cwd: &Path,
+    ) -> Result<ToolCallResult> {
+        let tool = self
+            .tools
+            .get(name)
+            .ok_or_else(|| ToolError::not_found(name))?;
         tool.execute(call, policy, cwd)
+    }
+
+    pub fn execute_with_audit(
+        &self,
+        name: &str,
+        call: &ToolCall,
+        policy: &Policy,
+        cwd: &Path,
+        audit: &mut Vec<ToolAuditRecord>,
+    ) -> Result<ToolCallResult> {
+        let result = self.execute(name, call, policy, cwd);
+
+        let (allowed, rule_id, status, error) = match &result {
+            Ok(value) => (true, "tool.allow".to_string(), value.status.clone(), None),
+            Err(error) => (
+                false,
+                tool_error_rule_id(error),
+                ToolStatus::Denied,
+                Some(format!("{error}")),
+            ),
+        };
+
+        audit.push(ToolAuditRecord {
+            call_id: call.id.clone(),
+            tool: name.to_string(),
+            allowed,
+            rule_id,
+            status,
+            error,
+        });
+
+        result
     }
 
     pub fn list(&self) -> Vec<ToolDefinition> {
@@ -167,7 +218,10 @@ impl Policy {
 
         let parent = requested.parent().unwrap_or(Path::new("."));
         if !parent.exists() {
-            return Err(ToolError::invalid("path", "parent directory does not exist"));
+            return Err(ToolError::invalid(
+                "path",
+                "parent directory does not exist",
+            ));
         }
         let parent = parent
             .canonicalize()
@@ -190,7 +244,9 @@ impl Policy {
         path.components().any(|component| {
             if let Component::Normal(component) = component {
                 let value = OsStr::to_string_lossy(component);
-                self.deny_write_paths.iter().any(|deny| deny == value.as_ref())
+                self.deny_write_paths
+                    .iter()
+                    .any(|deny| deny == value.as_ref())
             } else {
                 false
             }
@@ -251,6 +307,15 @@ impl ToolError {
     }
 }
 
+fn tool_error_rule_id(error: &ToolError) -> String {
+    match error {
+        ToolError::Denied(_) => "tool.policy.denied".to_string(),
+        ToolError::InvalidArg(_) => "tool.input.invalid".to_string(),
+        ToolError::NotFound(_) => "tool.missing".to_string(),
+        ToolError::Error(_) | ToolError::Io(_) => "tool.execution.error".to_string(),
+    }
+}
+
 fn take_max(value: String, max: usize) -> (String, bool) {
     if value.len() > max {
         let mut value = value;
@@ -268,7 +333,10 @@ where
     call.args
         .get(name)
         .ok_or_else(|| ToolError::invalid(name, "missing"))
-        .and_then(|value| serde_json::from_value(value.clone()).map_err(|err| ToolError::invalid(name, err.to_string())))
+        .and_then(|value| {
+            serde_json::from_value(value.clone())
+                .map_err(|err| ToolError::invalid(name, err.to_string()))
+        })
 }
 
 impl Tool for ReadTool {
@@ -295,7 +363,10 @@ impl Tool for ReadTool {
 
     fn execute(&self, call: &ToolCall, policy: &Policy, cwd: &Path) -> Result<ToolCallResult> {
         let path = read_arg::<String>(call, "path")?;
-        let max = read_arg::<Option<u64>>(call, "max_bytes")?
+        let max = call
+            .args
+            .get("max_bytes")
+            .and_then(|value| serde_json::from_value::<u64>(value.clone()).ok())
             .unwrap_or(policy.max_file_size as u64) as usize;
 
         let normalized = policy.canonicalize_path(&path, cwd)?;
@@ -312,7 +383,10 @@ impl Tool for ReadTool {
             error: None,
             truncated,
             metadata: BTreeMap::from_iter([
-                ("path".to_string(), json!(normalized.to_string_lossy().to_string())),
+                (
+                    "path".to_string(),
+                    json!(normalized.to_string_lossy().to_string()),
+                ),
                 ("bytes".to_string(), json!(bytes.len() as u64)),
             ]),
         })
@@ -345,7 +419,11 @@ impl Tool for WriteTool {
     fn execute(&self, call: &ToolCall, policy: &Policy, cwd: &Path) -> Result<ToolCallResult> {
         let path = read_arg::<String>(call, "path")?;
         let content = read_arg::<String>(call, "content")?;
-        let append = call.args.get("append").and_then(Value::as_bool).unwrap_or(false);
+        let append = call
+            .args
+            .get("append")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
 
         if content.len() > policy.max_file_size {
             return Err(ToolError::Error(format!(
@@ -356,7 +434,10 @@ impl Tool for WriteTool {
 
         let normalized = policy.canonicalize_path(&path, cwd)?;
         if policy.can_write_path(&normalized) {
-            return Err(ToolError::denied(format!("writing denied: {}", normalized.display())));
+            return Err(ToolError::denied(format!(
+                "writing denied: {}",
+                normalized.display()
+            )));
         }
 
         if let Some(parent) = normalized.parent() {
@@ -417,12 +498,14 @@ impl Tool for EditTool {
 
         let normalized = policy.canonicalize_path(&path, cwd)?;
         if policy.can_write_path(&normalized) {
-            return Err(ToolError::denied(format!("editing denied: {}", normalized.display())));
+            return Err(ToolError::denied(format!(
+                "editing denied: {}",
+                normalized.display()
+            )));
         }
 
-        let mut text = fs::read_to_string(&normalized).map_err(|err| {
-            ToolError::Error(format!("read existing file {}", err))
-        })?;
+        let mut text = fs::read_to_string(&normalized)
+            .map_err(|err| ToolError::Error(format!("read existing file {}", err)))?;
 
         let matches = text.matches(&from).count();
         if matches == 0 {
@@ -478,12 +561,12 @@ impl Tool for BashTool {
             return Err(ToolError::denied("command blocked by policy"));
         }
 
-        let timeout_ms =
-            call.args
-                .get("timeout_ms")
-                .and_then(Value::as_u64)
-                .unwrap_or(policy.command_timeout_ms)
-                .min(policy.command_timeout_ms);
+        let timeout_ms = call
+            .args
+            .get("timeout_ms")
+            .and_then(Value::as_u64)
+            .unwrap_or(policy.command_timeout_ms)
+            .min(policy.command_timeout_ms);
 
         let mut child = Command::new("sh");
         child.arg("-lc").arg(command);
@@ -514,8 +597,8 @@ impl Tool for BashTool {
                 status: ToolStatus::Error,
                 error: Some(format!("bash failed: code {code}: {}", stderr_raw)),
                 truncated,
-                metadata: BTreeMap::from_iter([(
-                    "stderr".to_string(), json!(stderr_raw)),
+                metadata: BTreeMap::from_iter([
+                    ("stderr".to_string(), json!(stderr_raw)),
                     ("exit_code".to_string(), json!(code)),
                 ]),
             })
@@ -556,29 +639,37 @@ impl Tool for FindTool {
     fn execute(&self, call: &ToolCall, _policy: &Policy, _cwd: &Path) -> Result<ToolCallResult> {
         let query = read_arg::<String>(call, "query")?;
         let limit = call.args.get("limit").and_then(Value::as_u64).unwrap_or(50) as usize;
-        let scope = call.args.get("scope").and_then(Value::as_str).map(str::to_string);
+        let scope = call
+            .args
+            .get("scope")
+            .and_then(Value::as_str)
+            .map(str::to_string);
 
         let result = if let Ok(handle) = tokio::runtime::Handle::try_current() {
             tokio::task::block_in_place(move || {
-                handle
-                    .block_on(self.search_service.find_files(&SearchQuery {
-                        text: query,
-                        scope,
-                        filters: vec![],
-                        limit,
-                        token: None,
-                        offset: 0,
-                    }))
+                handle.block_on(self.search_service.find_files(&SearchQuery {
+                    text: query,
+                    scope,
+                    filters: vec![],
+                    limit,
+                    token: None,
+                    offset: 0,
+                }))
             })
             .map_err(|err| ToolError::Error(err.to_string()))?
         } else {
-            return Err(ToolError::Error("tool execution requires tokio runtime".to_string()));
+            return Err(ToolError::Error(
+                "tool execution requires tokio runtime".to_string(),
+            ));
         };
 
         let count = result.items.len();
         let mut out = String::new();
         for item in result.items.iter() {
-            out.push_str(&format!("{} (score {:.3})\n", item.relative_path, item.score));
+            out.push_str(&format!(
+                "{} (score {:.3})\n",
+                item.relative_path, item.score
+            ));
         }
 
         Ok(ToolCallResult {
@@ -608,7 +699,8 @@ impl Tool for GrepTool {
                 "pattern": {"type": "string"},
                 "mode": {"type": "string", "enum": ["plain_text", "regex", "fuzzy"]},
                 "scope": {"type": "string"},
-                "limit": {"type": "integer", "minimum": 1}
+                "limit": {"type": "integer", "minimum": 1},
+                "token": {"type": "string"}
             },
             "required": ["pattern"]
         })
@@ -621,16 +713,34 @@ impl Tool for GrepTool {
             Some("fuzzy") => GrepMode::Fuzzy,
             _ => GrepMode::PlainText,
         };
-        let scope = call.args.get("scope").and_then(Value::as_str).unwrap_or(".");
+        let scope = call
+            .args
+            .get("scope")
+            .and_then(Value::as_str)
+            .unwrap_or(".");
         let limit = call.args.get("limit").and_then(Value::as_u64).unwrap_or(50) as usize;
+        let token = call
+            .args
+            .get("token")
+            .and_then(Value::as_str)
+            .map(|value| value.to_string());
 
         let response = if let Ok(handle) = tokio::runtime::Handle::try_current() {
             tokio::task::block_in_place(move || {
-                handle.block_on(self.search_service.grep(&pattern, mode, scope, limit))
+                handle.block_on(self.search_service.grep_query(GrepQuery {
+                    pattern,
+                    mode,
+                    scope: scope.to_string(),
+                    limit,
+                    token,
+                    offset: 0,
+                }))
             })
             .map_err(|err| ToolError::Error(err.to_string()))?
         } else {
-            return Err(ToolError::Error("tool execution requires tokio runtime".to_string()));
+            return Err(ToolError::Error(
+                "tool execution requires tokio runtime".to_string(),
+            ));
         };
 
         let lines = response
@@ -639,12 +749,21 @@ impl Tool for GrepTool {
             .map(|item| format!("{}:{} {}\n", item.path, item.line_number, item.line))
             .collect::<String>();
 
+        let mut metadata =
+            BTreeMap::from_iter([("matches".to_string(), json!(response.matches.len()))]);
+        if let Some(token) = response.token {
+            let _ = metadata.insert("next_token".to_string(), json!(token));
+        }
+        if let Some(warning) = response.warning {
+            let _ = metadata.insert("warning".to_string(), json!(warning));
+        }
+
         Ok(ToolCallResult {
             stdout: lines,
             status: ToolStatus::Ok,
             error: None,
             truncated: response.truncated,
-            metadata: BTreeMap::from_iter([("matches".to_string(), json!(response.matches.len()))]),
+            metadata,
         })
     }
 }
@@ -740,9 +859,7 @@ fn execute_with_timeout(
         }
 
         if let Some(_status) = child.try_wait().map_err(io::Error::other)? {
-            let out = child
-                .wait_with_output()
-                .map_err(io::Error::other)?;
+            let out = child.wait_with_output().map_err(io::Error::other)?;
             return Ok(Some(out));
         }
 

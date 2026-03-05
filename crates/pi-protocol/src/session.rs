@@ -170,7 +170,9 @@ fn canonicalize_json_value(value: Value) -> Value {
             }
             Value::Object(sorted)
         }
-        Value::Array(items) => Value::Array(items.into_iter().map(canonicalize_json_value).collect()),
+        Value::Array(items) => {
+            Value::Array(items.into_iter().map(canonicalize_json_value).collect())
+        }
         other => other,
     }
 }
@@ -179,7 +181,13 @@ pub fn summarize_entries(entries: &[SessionEntry]) -> String {
     let mut out = String::new();
     let _ = writeln!(&mut out, "entries={}", entries.len());
     for (idx, entry) in entries.iter().enumerate() {
-        let _ = writeln!(&mut out, "{} {} {}", idx, entry.entry_id, display_entry_kind(&entry.kind));
+        let _ = writeln!(
+            &mut out,
+            "{} {} {}",
+            idx,
+            entry.entry_id,
+            display_entry_kind(&entry.kind)
+        );
     }
     out
 }
