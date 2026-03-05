@@ -367,7 +367,7 @@ impl SearchService {
 
         let lower = pattern.to_lowercase();
         for entry in index.iter() {
-            if !entry.relative_path.starts_with(scope) {
+            if scope != "." && scope != "" && !entry.relative_path.starts_with(scope) {
                 continue;
             }
 
