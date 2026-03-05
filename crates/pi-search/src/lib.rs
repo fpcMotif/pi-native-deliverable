@@ -371,7 +371,7 @@ impl SearchService {
                 continue;
             }
 
-            let bytes = match std::fs::read(&entry.absolute_path) {
+            let bytes = match tokio::fs::read(&entry.absolute_path).await {
                 Ok(value) => value,
                 Err(_) => continue,
             };
