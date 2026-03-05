@@ -5,7 +5,7 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead};
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
@@ -154,9 +154,11 @@ impl SessionStore {
         self.entry_by_id.insert(id, self.log.entries.len() - 1);
         self.head_id = Some(id);
 
-        let mut file = OpenOptions::new().append(true).create(true).open(&self.path)?;
-        serde_json::to_writer(&mut file, &self.log.entries.last().expect("entry"))?;
-        file.write_all(b"\n")?;
+        let mut file = tokio::fs::OpenOptions::new().append(true).create(true).open(&self.path).await?;
+        let bytes = serde_json::to_vec(&self.log.entries.last().expect("entry"))?;
+        use tokio::io::AsyncWriteExt;
+        file.write_all(&bytes).await?;
+        file.write_all(b"\n").await?;
         Ok(id)
     }
 
