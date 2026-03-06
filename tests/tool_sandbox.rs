@@ -92,3 +92,4 @@ fn bash_dangerous_command_detector_is_stable() {
     assert!(is_dangerous_command("mkfs /dev/sda"));
     assert!(is_dangerous_command(":(){ :|:& };:"));
     assert!(!is_dangerous_command("echo safe"));
+}

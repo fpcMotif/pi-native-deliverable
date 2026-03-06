@@ -295,12 +295,14 @@ impl Tool for ReadTool {
 
     fn execute(&self, call: &ToolCall, policy: &Policy, cwd: &Path) -> Result<ToolCallResult> {
         let path = read_arg::<String>(call, "path")?;
-        let max = read_arg::<Option<u64>>(call, "max_bytes")?
+        let max = call.args.get("max_bytes")
+            .and_then(Value::as_u64)
             .unwrap_or(policy.max_file_size as u64) as usize;
 
         let normalized = policy.canonicalize_path(&path, cwd)?;
         let mut bytes = Vec::new();
-        fs::File::open(&normalized)?.read_to_end(&mut bytes)?;
+        let mut file = fs::File::open(&normalized)?;
+        file.read_to_end(&mut bytes)?;
         if bytes.iter().any(|byte| *byte == 0) {
             return Err(ToolError::denied("refusing to read binary file"));
         }
