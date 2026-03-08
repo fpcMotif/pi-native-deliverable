@@ -214,3 +214,52 @@ fn now_ms() -> u64 {
         .unwrap_or_default()
         .as_millis() as u64
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_jsonl_empty() {
+        assert_eq!(normalize_jsonl("").unwrap(), "");
+    }
+
+    #[test]
+    fn test_normalize_jsonl_skip_empty_lines() {
+        assert_eq!(normalize_jsonl("\n   \n\n").unwrap(), "");
+    }
+
+    #[test]
+    fn test_normalize_jsonl_single_object() {
+        let raw = r#"{"b": 2, "a": 1}"#;
+        let expected = r#"{"a":1,"b":2}"#;
+        assert_eq!(normalize_jsonl(raw).unwrap(), expected);
+    }
+
+    #[test]
+    fn test_normalize_jsonl_nested_objects() {
+        let raw = r#"{"z": {"d": 4, "c": 3}, "a": {"b": 2, "a": 1}}"#;
+        let expected = r#"{"a":{"a":1,"b":2},"z":{"c":3,"d":4}}"#;
+        assert_eq!(normalize_jsonl(raw).unwrap(), expected);
+    }
+
+    #[test]
+    fn test_normalize_jsonl_arrays() {
+        let raw = r#"[{"b": 2, "a": 1}, {"d": 4, "c": 3}]"#;
+        let expected = r#"[{"a":1,"b":2},{"c":3,"d":4}]"#;
+        assert_eq!(normalize_jsonl(raw).unwrap(), expected);
+    }
+
+    #[test]
+    fn test_normalize_jsonl_multiple_lines() {
+        let raw = "{\"b\": 2, \"a\": 1}\n\n{\"d\": 4, \"c\": 3}";
+        let expected = "{\"a\":1,\"b\":2}\n{\"c\":3,\"d\":4}";
+        assert_eq!(normalize_jsonl(raw).unwrap(), expected);
+    }
+
+    #[test]
+    fn test_normalize_jsonl_invalid_json() {
+        let raw = r#"{"a": 1"#;
+        assert!(normalize_jsonl(raw).is_err());
+    }
+}
