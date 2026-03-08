@@ -578,3 +578,32 @@ pub fn schema_json() -> Value {
     });
     envelope_request
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_client_request_not_object() {
+        let result = parse_client_request("[]");
+        assert!(result.is_err());
+
+        match result.unwrap_err() {
+            ProtocolError::InvalidPayload(msg) => {
+                assert_eq!(msg, "request is not an object");
+            }
+            err => panic!("Expected ProtocolError::InvalidPayload, got: {:?}", err),
+        }
+    }
+
+    #[test]
+    fn test_parse_client_request_invalid_json() {
+        let result = parse_client_request("{");
+        assert!(result.is_err());
+
+        match result.unwrap_err() {
+            ProtocolError::Json(_) => {}
+            err => panic!("Expected ProtocolError::Json, got: {:?}", err),
+        }
+    }
+}
