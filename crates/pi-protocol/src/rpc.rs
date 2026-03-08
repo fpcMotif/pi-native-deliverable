@@ -606,4 +606,73 @@ mod tests {
             err => panic!("Expected ProtocolError::Json, got: {:?}", err),
         }
     }
+
+    #[test]
+    fn test_to_jsonl_value_ready_event() {
+        let event = ServerEvent::Ready {
+            v: "1.0.0".to_string(),
+            id: Some("req-123".to_string()),
+            request_id: Some("req-123".to_string()),
+            capabilities: serde_json::json!({ "feature": true }),
+        };
+
+        let result = to_jsonl_value(&event);
+        let parsed: Value = serde_json::from_str(&result).unwrap();
+
+        assert_eq!(parsed["type"], "ready");
+        assert_eq!(parsed["v"], PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn test_to_jsonl_value_error_event() {
+        let event = ServerEvent::Error {
+            v: "1.0.0".to_string(),
+            id: None,
+            request_id: Some("req-456".to_string()),
+            error: ProtocolErrorPayload {
+                code: "invalid_request".to_string(),
+                message: "Missing parameter".to_string(),
+                details: None,
+            },
+        };
+
+        let result = to_jsonl_value(&event);
+        let parsed: Value = serde_json::from_str(&result).unwrap();
+
+        assert_eq!(parsed["type"], "error");
+        assert_eq!(parsed["v"], PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn test_to_jsonl_value_turn_start_event() {
+        let event = ServerEvent::TurnStart {
+            v: "1.0.0".to_string(),
+            id: Some("req-789".to_string()),
+            request_id: Some("req-789".to_string()),
+            kind: "chat".to_string(),
+        };
+
+        let result = to_jsonl_value(&event);
+        let parsed: Value = serde_json::from_str(&result).unwrap();
+
+        assert_eq!(parsed["type"], "turn_start");
+        assert_eq!(parsed["v"], PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn test_to_jsonl_value_message_update_event() {
+        let event = ServerEvent::MessageUpdate {
+            v: "1.0.0".to_string(),
+            id: Some("req-101".to_string()),
+            request_id: Some("req-101".to_string()),
+            delta: "Hello".to_string(),
+            done: false,
+        };
+
+        let result = to_jsonl_value(&event);
+        let parsed: Value = serde_json::from_str(&result).unwrap();
+
+        assert_eq!(parsed["type"], "message_update");
+        assert_eq!(parsed["v"], PROTOCOL_VERSION);
+    }
 }

@@ -146,6 +146,10 @@ impl ToolRegistry {
             .collect()
     }
 
+    pub fn list_names(&self) -> Vec<String> {
+        self.tools.keys().cloned().collect()
+    }
+
     pub fn schema_json(&self) -> Value {
         let tools: Vec<_> = self
             .list()
@@ -241,12 +245,43 @@ impl Policy {
     }
 
     pub fn can_write_path(&self, path: &Path) -> bool {
-        path.components().any(|component| {
+        !path.components().any(|component| {
             if let Component::Normal(component) = component {
-                let value = OsStr::to_string_lossy(component);
-                self.deny_write_paths
+                let value = OsStr::to_string_lossy(component).to_lowercase();
+
+                // Check direct matches from the deny list (case-insensitive)
+                if self
+                    .deny_write_paths
                     .iter()
-                    .any(|deny| deny == value.as_ref())
+                    .any(|deny| deny.to_lowercase() == value)
+                {
+                    return true;
+                }
+
+                // Hardcoded sensitive directories
+                if value == ".git" || value == ".ssh" || value == ".aws" {
+                    return true;
+                }
+
+                // Sensitive file prefixes (env files and SSH keys)
+                if value.starts_with(".env") {
+                    return true;
+                }
+
+                // Specific SSH key file patterns (not overly broad)
+                if value == "id_rsa"
+                    || value == "id_rsa.pub"
+                    || value == "id_ed25519"
+                    || value == "id_ed25519.pub"
+                    || value == "id_ecdsa"
+                    || value == "id_ecdsa.pub"
+                    || value == "id_dsa"
+                    || value == "id_dsa.pub"
+                {
+                    return true;
+                }
+
+                false
             } else {
                 false
             }
@@ -446,7 +481,7 @@ impl Tool for WriteTool {
         }
 
         let normalized = policy.canonicalize_path(&path, cwd)?;
-        if policy.can_write_path(&normalized) {
+        if !policy.can_write_path(&normalized) {
             return Err(ToolError::denied(format!(
                 "writing denied: {}",
                 normalized.display()
@@ -510,7 +545,7 @@ impl Tool for EditTool {
         let to = read_arg::<String>(call, "to")?;
 
         let normalized = policy.canonicalize_path(&path, cwd)?;
-        if policy.can_write_path(&normalized) {
+        if !policy.can_write_path(&normalized) {
             return Err(ToolError::denied(format!(
                 "editing denied: {}",
                 normalized.display()
