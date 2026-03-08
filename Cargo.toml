@@ -60,4 +60,3 @@ protocol-schema = ["pi-protocol/schema"]
 [dev-dependencies]
 pi-ext = { path = "crates/pi-ext" }
 tempfile = "3.17"
-pi-ext = { path = "crates/pi-ext" }
