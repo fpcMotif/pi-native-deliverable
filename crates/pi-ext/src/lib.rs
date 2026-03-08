@@ -78,3 +78,22 @@ pub fn explain_policy(policy: &Policy, capability: Capability) -> String {
     let decision = policy.check(capability);
     format!("allowed={}: {}", decision.allowed, decision.reason)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_explain_policy_allowed() {
+        let policy = Policy::safe().allow(Capability::FileRead);
+        let explanation = explain_policy(&policy, Capability::FileRead);
+        assert_eq!(explanation, "allowed=true: allowed by policy");
+    }
+
+    #[test]
+    fn test_explain_policy_denied() {
+        let policy = Policy::safe().deny(Capability::NetworkHttp);
+        let explanation = explain_policy(&policy, Capability::NetworkHttp);
+        assert_eq!(explanation, "allowed=false: safe policy denies this capability");
+    }
+}
