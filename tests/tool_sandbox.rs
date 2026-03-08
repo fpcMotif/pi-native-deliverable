@@ -60,10 +60,12 @@ fn tool_policy_blocks_binary_read() {
         name: "read".to_string(),
         args: json!({
             "path": "binary.bin",
+            "max_bytes": 100,
         }),
     };
 
     let res = tool.execute(&call, &policy, tmp.path());
+    println!("read tool result: {:?}", res);
     assert!(matches!(res, Err(ToolError::Denied(msg)) if msg.contains("binary")));
 }
 

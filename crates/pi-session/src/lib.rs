@@ -369,3 +369,32 @@ fn normalize_path(path: &Path) -> PathBuf {
 struct LegacyLog {
     pub entries: Vec<SessionEntry>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+
+    #[tokio::test]
+    async fn test_checkout_nonexistent_entry() {
+        let temp_dir = env::temp_dir();
+        let session_path = temp_dir.join(format!("{}.jsonl", Uuid::new_v4()));
+
+        // Initialize a minimal SessionStore
+        let mut store = SessionStore::new(&session_path).await.unwrap();
+
+        // Ensure head_id is initially None
+        assert_eq!(store.get_branch_head(), None);
+
+        // Attempt to checkout a random, non-existent UUID
+        let random_id = Uuid::new_v4();
+        let result = store.checkout(random_id).await;
+
+        // Verify it returns false and doesn't change head_id
+        assert!(!result);
+        assert_eq!(store.get_branch_head(), None);
+
+        // Clean up
+        let _ = fs::remove_file(session_path);
+    }
+}
