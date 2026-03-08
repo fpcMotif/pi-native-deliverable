@@ -863,3 +863,57 @@ pub fn decode_token(token: &str) -> SearchResult<usize> {
         .try_into()
         .map_err(|_| SearchError::InvalidToken("token overflow".to_string()))?)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_encode_token() {
+        // 0 as u64 is 8 bytes of 0.
+        let token = encode_token(0);
+        assert_eq!(token, "AAAAAAAAAAA=");
+
+        // 1 as u64 is 7 bytes of 0, followed by 1.
+        let token = encode_token(1);
+        assert_eq!(token, "AAAAAAAAAAE=");
+
+        // 42 as u64
+        let token = encode_token(42);
+        assert_eq!(token, "AAAAAAAAACo=");
+    }
+
+    #[test]
+    fn test_token_roundtrip() {
+        let test_cases = vec![
+            0,
+            1,
+            42,
+            100,
+            1024,
+            usize::MAX,
+        ];
+
+        for &val in &test_cases {
+            let encoded = encode_token(val);
+            let decoded = decode_token(&encoded).expect("Should decode successfully");
+            assert_eq!(decoded, val, "Failed roundtrip for value: {}", val);
+        }
+    }
+
+    #[test]
+    fn test_decode_invalid_token() {
+        // Invalid base64
+        assert!(matches!(decode_token("not base64!"), Err(SearchError::InvalidToken(_))));
+
+        // Valid base64 but wrong size (e.g. 4 bytes instead of 8)
+        let wrong_size = STANDARD.encode(1u32.to_be_bytes());
+        assert!(matches!(decode_token(&wrong_size), Err(SearchError::InvalidToken(_))));
+
+        // Valid base64 but wrong size (e.g. 9 bytes)
+        let mut nine_bytes = [0u8; 9];
+        nine_bytes[8] = 1;
+        let wrong_size = STANDARD.encode(nine_bytes);
+        assert!(matches!(decode_token(&wrong_size), Err(SearchError::InvalidToken(_))));
+    }
+}
