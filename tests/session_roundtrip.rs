@@ -1,28 +1,62 @@
+use pi_protocol::session::{normalize_jsonl, SessionEntryKind, SessionLog};
+use pi_session::SessionStore;
 use std::fs;
-use std::path::PathBuf;
+use uuid::Uuid;
 
-/// Session JSONL roundtrip should preserve semantics.
-/// This test assumes `pi-protocol` exposes `SessionLog` types and `normalize()` helper.
-#[test]
-fn session_jsonl_roundtrip_semantics() {
+/// PRD mapping:
+/// - test_suite.md §1.3 `session_roundtrip`: write JSONL, reload, compare normalized structure.
+/// - spec.md session semantics: parent-child links and branch head updates remain intact.
+#[tokio::test]
+async fn session_jsonl_roundtrip_semantics() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let session_path = tmp.path().join("session.jsonl");
 
-    // Minimal synthetic session log. The actual schema lives in pi-protocol.
-    let entries = vec![
-        r#"{"schema_version":"1.0","entry_id":"00000000-0000-0000-0000-000000000001","kind":"user_message","parent_id":null,"payload":{"text":"hello"}}"#,
-        r#"{"schema_version":"1.0","entry_id":"00000000-0000-0000-0000-000000000002","kind":"assistant_message","parent_id":"00000000-0000-0000-0000-000000000001","payload":{"text":"hi"}}"#,
-    ];
+    let user_id = Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("uuid");
+    let assistant_id = Uuid::parse_str("00000000-0000-0000-0000-000000000002").expect("uuid");
 
-    fs::write(&session_path, entries.join("\n") + "\n").expect("write session");
+    let raw = [
+        format!(
+            "{{\"timestamp_ms\":1,\"schema_version\":\"1.0\",\"kind\":\"user_message\",\"text\":\"hello\",\"entry_id\":\"{user_id}\",\"parent_id\":null}}"
+        ),
+        format!(
+            "{{\"kind\":\"assistant_message\",\"schema_version\":\"1.0\",\"entry_id\":\"{assistant_id}\",\"text\":\"hi\",\"timestamp_ms\":2,\"parent_id\":\"{user_id}\"}}"
+        ),
+    ]
+    .join("\n")
+        + "\n";
+    fs::write(&session_path, &raw).expect("write session");
 
-    // TODO: replace with real loader once implemented
-    let raw = fs::read_to_string(&session_path).expect("read session");
-    assert!(raw.contains("user_message"));
-    assert!(raw.contains("assistant_message"));
+    let log = SessionLog::load_jsonl(&session_path).expect("load protocol log");
+    assert_eq!(log.entries.len(), 2);
+    assert_eq!(log.entries[0].entry_id, user_id);
+    assert_eq!(log.entries[1].parent_id, Some(user_id));
+    assert!(matches!(
+        log.entries[1].kind,
+        SessionEntryKind::AssistantMessage { .. }
+    ));
 
-    // TODO:
-    // let log = pi_protocol::session::SessionLog::load_jsonl(&session_path).unwrap();
-    // let roundtrip = log.to_jsonl_string().unwrap();
-    // assert_eq!(pi_protocol::session::normalize_jsonl(&raw), pi_protocol::session::normalize_jsonl(&roundtrip));
+    let roundtrip = log.to_jsonl_string().expect("serialize jsonl");
+    assert_eq!(
+        normalize_jsonl(&raw).expect("normalize input"),
+        normalize_jsonl(&roundtrip).expect("normalize output")
+    );
+
+    let mut store = SessionStore::load(session_path.clone())
+        .await
+        .expect("load session store");
+    assert_eq!(store.current_head().await, Some(assistant_id));
+
+    assert!(store.checkout(user_id).await);
+    let branch_id = store
+        .append(SessionEntryKind::AssistantMessage {
+            text: "branch reply".to_string(),
+        })
+        .await
+        .expect("append branch message");
+
+    let branched = SessionLog::load_jsonl(&session_path).expect("reload after append");
+    let latest = branched.entries.last().expect("new entry");
+    assert_eq!(latest.entry_id, branch_id);
+    assert_eq!(latest.parent_id, Some(user_id));
+    assert_eq!(branched.entries.len(), 3);
 }
