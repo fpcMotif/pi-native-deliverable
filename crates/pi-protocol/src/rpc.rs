@@ -617,7 +617,7 @@ mod tests {
         };
 
         let result = to_jsonl_value(&event);
-        let parsed: Value = serde_json::from_str(&result).unwrap();
+        let parsed: Value = serde_json::from_str(&result).expect("Failed to parse JSON string");
 
         assert_eq!(parsed["type"], "ready");
         assert_eq!(parsed["v"], PROTOCOL_VERSION);
@@ -637,7 +637,7 @@ mod tests {
         };
 
         let result = to_jsonl_value(&event);
-        let parsed: Value = serde_json::from_str(&result).unwrap();
+        let parsed: Value = serde_json::from_str(&result).expect("Failed to parse JSON string");
 
         assert_eq!(parsed["type"], "error");
         assert_eq!(parsed["v"], PROTOCOL_VERSION);
@@ -653,7 +653,7 @@ mod tests {
         };
 
         let result = to_jsonl_value(&event);
-        let parsed: Value = serde_json::from_str(&result).unwrap();
+        let parsed: Value = serde_json::from_str(&result).expect("Failed to parse JSON string");
 
         assert_eq!(parsed["type"], "turn_start");
         assert_eq!(parsed["v"], PROTOCOL_VERSION);
@@ -670,7 +670,7 @@ mod tests {
         };
 
         let result = to_jsonl_value(&event);
-        let parsed: Value = serde_json::from_str(&result).unwrap();
+        let parsed: Value = serde_json::from_str(&result).expect("Failed to parse JSON string");
 
         assert_eq!(parsed["type"], "message_update");
         assert_eq!(parsed["v"], PROTOCOL_VERSION);
