@@ -108,10 +108,7 @@ impl SessionStore {
 
         let mut store = Self {
             path,
-            log: SessionLog {
-                entries,
-                ..Default::default()
-            },
+            log: SessionLog { entries },
             entry_by_id: HashMap::new(),
             children: HashMap::new(),
             roots: Vec::new(),
@@ -251,7 +248,7 @@ impl SessionStore {
         self.log
             .entries
             .iter()
-            .map(|entry| canonical_json(entry))
+            .map(canonical_json)
             .collect::<Result<Vec<_>>>()
             .map(|lines| lines.join("\n"))
     }
