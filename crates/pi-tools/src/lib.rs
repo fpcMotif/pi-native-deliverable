@@ -16,6 +16,21 @@ pub type Result<T> = std::result::Result<T, ToolError>;
 
 pub const DEFAULT_WRITE_LIMIT_BYTES: usize = 4 * 1024 * 1024;
 
+/// Well-known rule IDs used in audit records and policy decisions.
+pub const RULE_WORKSPACE_BOUNDARY: &str = "PT001";
+pub const RULE_DENY_WRITE_PATH: &str = "PT002";
+pub const RULE_BINARY_READ_BLOCKED: &str = "PT003";
+pub const RULE_DANGEROUS_COMMAND: &str = "PT004";
+
+/// Predefined security profiles for tool execution.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PolicyPreset {
+    Safe,
+    Balanced,
+    Permissive,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
     pub id: String,
@@ -169,6 +184,7 @@ impl ToolRegistry {
 
 #[derive(Debug, Clone)]
 pub struct Policy {
+    pub preset: PolicyPreset,
     pub workspace_root: PathBuf,
     pub max_stdout_bytes: usize,
     pub max_stderr_bytes: usize,
@@ -179,7 +195,12 @@ pub struct Policy {
 
 impl Policy {
     pub fn safe_defaults(workspace_root: impl Into<PathBuf>) -> Self {
+        Self::safe(workspace_root)
+    }
+
+    pub fn safe(workspace_root: impl Into<PathBuf>) -> Self {
         Self {
+            preset: PolicyPreset::Safe,
             workspace_root: workspace_root.into(),
             max_stdout_bytes: 32 * 1024,
             max_stderr_bytes: 8 * 1024,
@@ -192,6 +213,34 @@ impl Policy {
                 "id_rsa.pub".to_string(),
             ],
             max_file_size: DEFAULT_WRITE_LIMIT_BYTES,
+        }
+    }
+
+    pub fn balanced(workspace_root: impl Into<PathBuf>) -> Self {
+        Self {
+            preset: PolicyPreset::Balanced,
+            workspace_root: workspace_root.into(),
+            max_stdout_bytes: 64 * 1024,
+            max_stderr_bytes: 16 * 1024,
+            command_timeout_ms: 10_000,
+            deny_write_paths: vec![
+                ".env".to_string(),
+                ".env.local".to_string(),
+                ".bash_history".to_string(),
+            ],
+            max_file_size: DEFAULT_WRITE_LIMIT_BYTES * 2,
+        }
+    }
+
+    pub fn permissive(workspace_root: impl Into<PathBuf>) -> Self {
+        Self {
+            preset: PolicyPreset::Permissive,
+            workspace_root: workspace_root.into(),
+            max_stdout_bytes: 256 * 1024,
+            max_stderr_bytes: 64 * 1024,
+            command_timeout_ms: 30_000,
+            deny_write_paths: Vec::new(),
+            max_file_size: DEFAULT_WRITE_LIMIT_BYTES * 4,
         }
     }
 

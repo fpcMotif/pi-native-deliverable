@@ -2,6 +2,7 @@
 
 use clap::{Parser, Subcommand, ValueEnum};
 use pi_core::{run_rpc, Agent, AgentConfig};
+use pi_ext::RuntimeHost;
 use pi_llm::{MockProvider, Provider};
 use pi_protocol::{parse_client_request, protocol_version, to_json_line, ServerEvent};
 use pi_search::{SearchService, SearchServiceConfig};
@@ -29,6 +30,9 @@ struct Cli {
 
     #[arg(long)]
     workspace: Option<PathBuf>,
+
+    #[arg(long)]
+    extensions_dir: Option<PathBuf>,
 
     #[arg(long)]
     line_limit: Option<usize>,
@@ -92,6 +96,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let policy = Policy::safe_defaults(workspace.clone());
     let registry = default_registry(search_service.clone());
 
+    let mut extension_host = RuntimeHost::default();
+    let extensions_dir = cli
+        .extensions_dir
+        .unwrap_or_else(|| workspace.join(".pi/extensions"));
+    if let Ok(entries) = std::fs::read_dir(&extensions_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) == Some("json") {
+                let _ = extension_host.load_extension_manifest(path);
+            }
+        }
+    }
+
     let config = AgentConfig {
         provider,
         tool_registry: registry,
@@ -100,6 +117,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         workspace_root: workspace.clone(),
         default_provider_model: cli.model,
         line_limit,
+        extension_host: std::sync::Arc::new(tokio::sync::Mutex::new(extension_host)),
     };
 
     let agent = Agent::new(config).await;
@@ -192,6 +210,18 @@ async fn run_interactive(agent: Agent) {
 
         if line == "/exit" {
             break;
+        }
+        if line == "/reload" {
+            match agent.reload_extensions().await {
+                Ok(count) => {
+                    let _ = out.write_all(format!("extensions reloaded: {count}\n").as_bytes());
+                }
+                Err(err) => {
+                    let _ = out.write_all(format!("reload error: {err}\n").as_bytes());
+                }
+            }
+            let _ = out.flush();
+            continue;
         }
         if line.trim().is_empty() {
             continue;

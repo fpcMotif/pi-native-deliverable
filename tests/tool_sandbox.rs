@@ -92,3 +92,17 @@ fn bash_dangerous_command_detector_is_stable() {
     assert!(is_dangerous_command(":(){ :|:& };:"));
     assert!(!is_dangerous_command("echo safe"));
 }
+
+#[test]
+fn policy_presets_are_named_and_distinct() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let safe = Policy::safe(tmp.path());
+    let balanced = Policy::balanced(tmp.path());
+    let permissive = Policy::permissive(tmp.path());
+
+    assert_eq!(safe.preset, pi_tools::PolicyPreset::Safe);
+    assert_eq!(balanced.preset, pi_tools::PolicyPreset::Balanced);
+    assert_eq!(permissive.preset, pi_tools::PolicyPreset::Permissive);
+    assert!(!safe.deny_write_paths.is_empty());
+    assert!(permissive.deny_write_paths.is_empty());
+}

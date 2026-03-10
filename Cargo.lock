@@ -1028,6 +1028,7 @@ dependencies = [
 name = "pi-core"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "futures",
  "pi-ext",
  "pi-llm",

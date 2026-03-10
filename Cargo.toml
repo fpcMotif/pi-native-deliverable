@@ -48,6 +48,7 @@ pi-session = { path = "crates/pi-session" }
 pi-tools = { path = "crates/pi-tools" }
 pi-search = { path = "crates/pi-search" }
 pi-llm = { path = "crates/pi-llm", default-features = false, features = ["openai"] }
+pi-ext = { path = "crates/pi-ext" }
 serde_json.workspace = true
 uuid.workspace = true
 
@@ -58,5 +59,4 @@ openai = ["pi-llm/openai"]
 protocol-schema = ["pi-protocol/schema"]
 
 [dev-dependencies]
-pi-ext = { path = "crates/pi-ext" }
 tempfile = "3.17"
