@@ -867,6 +867,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "pi-core",
+ "pi-ext",
  "pi-llm",
  "pi-protocol",
  "pi-search",
@@ -900,6 +901,7 @@ dependencies = [
 name = "pi-ext"
 version = "0.1.0"
 dependencies = [
+ "pi-tools",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
