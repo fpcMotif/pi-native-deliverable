@@ -32,18 +32,13 @@ pub struct SearchFilter {
     pub extension: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum GrepMode {
+    #[default]
     PlainText,
     Regex,
     Fuzzy,
-}
-
-impl Default for GrepMode {
-    fn default() -> Self {
-        Self::PlainText
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -341,7 +336,9 @@ impl SearchService {
                             }
                             if service.config.use_git_status {
                                 if let Err(err) = service.refresh_git_status().await {
-                                    eprintln!("pi-search: watcher refresh_git_status failed: {err}");
+                                    eprintln!(
+                                        "pi-search: watcher refresh_git_status failed: {err}"
+                                    );
                                 }
                             }
                         }
@@ -498,6 +495,7 @@ impl SearchService {
         };
 
         let lower = query.pattern.to_lowercase();
+        let query_char_count = lower.chars().count();
         let mut lower_line = String::new();
         let mut matches = Vec::new();
         let required = start.saturating_add(limit).saturating_add(1);
@@ -545,17 +543,25 @@ impl SearchService {
                 let line_match_spans = match &matcher {
                     Matcher::Regex(regex) => collect_match_spans(line, regex),
                     Matcher::Fuzzy => {
-                        lower_line.clear();
-                        for c in line.chars() {
-                            for lc in c.to_lowercase() {
-                                lower_line.push(lc);
-                            }
-                        }
-                        let line_match = normalized_levenshtein(&lower_line, &lower) >= 0.72;
-                        if line_match {
-                            collect_fuzzy_spans(line, &query.pattern)
-                        } else {
+                        let line_char_count = line.chars().count();
+                        let max_len = line_char_count.max(query_char_count);
+                        let len_diff = line_char_count.abs_diff(query_char_count);
+
+                        if max_len > 0 && (len_diff as f64) / (max_len as f64) > 0.28 {
                             Vec::new()
+                        } else {
+                            lower_line.clear();
+                            for c in line.chars() {
+                                for lc in c.to_lowercase() {
+                                    lower_line.push(lc);
+                                }
+                            }
+                            let line_match = normalized_levenshtein(&lower_line, &lower) >= 0.72;
+                            if line_match {
+                                collect_fuzzy_spans(line, &query.pattern)
+                            } else {
+                                Vec::new()
+                            }
                         }
                     }
                 };
@@ -664,7 +670,7 @@ impl SearchService {
 }
 
 fn matches_scope(entry: &IndexedFile, scope: Option<&str>) -> bool {
-    scope.is_none_or(|scope| scope_is_prefix(&entry.relative_path, scope))
+    scope.map_or(true, |scope| scope_is_prefix(&entry.relative_path, scope))
 }
 
 fn matches_filters(entry: &IndexedFile, filters: &[SearchFilter], query: &str) -> bool {
@@ -676,11 +682,11 @@ fn matches_filters(entry: &IndexedFile, filters: &[SearchFilter], query: &str) -
         let ext_ok = filter
             .extension
             .as_ref()
-            .is_none_or(|ext| entry.relative_path.ends_with(&format!(".{ext}")));
+            .map_or(true, |ext| entry.relative_path.ends_with(&format!(".{ext}")));
         let scope_ok = filter
             .path_prefix
             .as_ref()
-            .is_none_or(|prefix| scope_is_prefix(&entry.relative_path, prefix));
+            .map_or(true, |prefix| scope_is_prefix(&entry.relative_path, prefix));
         if !ext_ok || !scope_ok {
             return false;
         }
@@ -745,79 +751,6 @@ fn collect_fuzzy_spans(line: &str, pattern: &str) -> Vec<GrepMatchSpan> {
         })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn scope_prefix_matches_components_not_prefix_fragments() {
-        assert!(scope_is_prefix("foo/bar/baz.txt", "foo"));
-        assert!(scope_is_prefix("foo/bar/baz.txt", "foo/"));
-        assert!(scope_is_prefix("foo/bar/baz.txt", "foo/bar"));
-        assert!(!scope_is_prefix("foo-secret/bar.txt", "foo"));
-    }
-
-    #[test]
-    fn scope_prefix_rejects_parent_directory_segments() {
-        assert!(!scope_is_prefix("other/bar.txt", "../other"));
-        assert!(!scope_is_prefix("foo/bar.txt", "foo/../foo"));
-    }
-
-    #[test]
-    fn scope_is_prefix_supports_special_inputs() {
-        assert!(scope_is_prefix("any/path.txt", "."));
-        assert!(scope_is_prefix("any/path.txt", ""));
-        assert!(!scope_is_prefix("foo/bar.txt", "baz"));
-    }
-
-    #[test]
-    fn test_encode_token() {
-        let token = encode_token(0);
-        assert_eq!(token, "AAAAAAAAAAA=");
-
-        let token = encode_token(1);
-        assert_eq!(token, "AAAAAAAAAAE=");
-
-        let token = encode_token(42);
-        assert_eq!(token, "AAAAAAAAACo=");
-    }
-
-    #[test]
-    fn test_token_roundtrip() {
-        let test_cases = vec![0, 1, 42, 100, 1024, usize::MAX];
-
-        for &val in &test_cases {
-            let encoded = encode_token(val);
-            let decoded = decode_token(&encoded).expect("Should decode successfully");
-            assert_eq!(decoded, val, "Failed roundtrip for value: {}", val);
-        }
-    }
-
-    #[test]
-    fn test_decode_invalid_token() {
-        // Invalid base64
-        assert!(matches!(
-            decode_token("not base64!"),
-            Err(SearchError::InvalidToken(_))
-        ));
-
-        // Valid base64 but wrong size (e.g. 4 bytes instead of 8)
-        let wrong_size = STANDARD.encode(1u32.to_be_bytes());
-        assert!(matches!(
-            decode_token(&wrong_size),
-            Err(SearchError::InvalidToken(_))
-        ));
-
-        // Valid base64 but wrong size (e.g. 9 bytes)
-        let mut nine_bytes = [0u8; 9];
-        nine_bytes[8] = 1;
-        let wrong_size = STANDARD.encode(nine_bytes);
-        assert!(matches!(
-            decode_token(&wrong_size),
-            Err(SearchError::InvalidToken(_))
-        ));
-    }
-}
 
 fn should_ignore_path(relative: &str) -> bool {
     relative.starts_with(".git/")
@@ -913,8 +846,81 @@ pub fn decode_token(token: &str) -> SearchResult<usize> {
             .try_into()
             .map_err(|_| SearchError::InvalidToken("invalid token payload".to_string()))?,
     );
-    Ok(value
+    value
         .try_into()
-        .map_err(|_| SearchError::InvalidToken("token overflow".to_string()))?)
+        .map_err(|_| SearchError::InvalidToken("token overflow".to_string()))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scope_prefix_matches_components_not_prefix_fragments() {
+        assert!(scope_is_prefix("foo/bar/baz.txt", "foo"));
+        assert!(scope_is_prefix("foo/bar/baz.txt", "foo/"));
+        assert!(scope_is_prefix("foo/bar/baz.txt", "foo/bar"));
+        assert!(!scope_is_prefix("foo-secret/bar.txt", "foo"));
+    }
+
+    #[test]
+    fn scope_prefix_rejects_parent_directory_segments() {
+        assert!(!scope_is_prefix("other/bar.txt", "../other"));
+        assert!(!scope_is_prefix("foo/bar.txt", "foo/../foo"));
+    }
+
+    #[test]
+    fn scope_is_prefix_supports_special_inputs() {
+        assert!(scope_is_prefix("any/path.txt", "."));
+        assert!(scope_is_prefix("any/path.txt", ""));
+        assert!(!scope_is_prefix("foo/bar.txt", "baz"));
+    }
+
+    #[test]
+    fn test_encode_token() {
+        let token = encode_token(0);
+        assert_eq!(token, "AAAAAAAAAAA=");
+
+        let token = encode_token(1);
+        assert_eq!(token, "AAAAAAAAAAE=");
+
+        let token = encode_token(42);
+        assert_eq!(token, "AAAAAAAAACo=");
+    }
+
+    #[test]
+    fn test_token_roundtrip() {
+        let test_cases = vec![0, 1, 42, 100, 1024, usize::MAX];
+
+        for &val in &test_cases {
+            let encoded = encode_token(val);
+            let decoded = decode_token(&encoded).expect("Should decode successfully");
+            assert_eq!(decoded, val, "Failed roundtrip for value: {}", val);
+        }
+    }
+
+    #[test]
+    fn test_decode_invalid_token() {
+        // Invalid base64
+        assert!(matches!(
+            decode_token("not base64!"),
+            Err(SearchError::InvalidToken(_))
+        ));
+
+        // Valid base64 but wrong size (e.g. 4 bytes instead of 8)
+        let wrong_size = STANDARD.encode(1u32.to_be_bytes());
+        assert!(matches!(
+            decode_token(&wrong_size),
+            Err(SearchError::InvalidToken(_))
+        ));
+
+        // Valid base64 but wrong size (e.g. 9 bytes)
+        let mut nine_bytes = [0u8; 9];
+        nine_bytes[8] = 1;
+        let wrong_size = STANDARD.encode(nine_bytes);
+        assert!(matches!(
+            decode_token(&wrong_size),
+            Err(SearchError::InvalidToken(_))
+        ));
+    }
+}

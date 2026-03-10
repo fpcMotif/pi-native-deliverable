@@ -110,7 +110,6 @@ impl SessionStore {
             path,
             log: SessionLog {
                 entries,
-                ..Default::default()
             },
             entry_by_id: HashMap::new(),
             children: HashMap::new(),
@@ -251,7 +250,7 @@ impl SessionStore {
         self.log
             .entries
             .iter()
-            .map(|entry| canonical_json(entry))
+            .map(canonical_json)
             .collect::<Result<Vec<_>>>()
             .map(|lines| lines.join("\n"))
     }
