@@ -158,7 +158,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let _ = writeln!(io::stdout(), "missing --prompt in print mode");
             }
         }
-        Mode::Interactive => run_interactive(agent, workspace, &mut catalog).await,
+        Mode::Interactive => run_interactive(agent, workspace, &mut catalog, search_service).await,
     }
 
     Ok(())
@@ -198,7 +198,7 @@ async fn print_events_to_stdout(events: &[ServerEvent]) {
     }
 }
 
-async fn run_interactive(agent: Agent, workspace: PathBuf, catalog: &mut Catalog) {
+async fn run_interactive(agent: Agent, workspace: PathBuf, catalog: &mut Catalog, search_service: std::sync::Arc<SearchService>) {
     let mut out = io::stdout();
     let mut lines = tokio_io::BufReader::new(tokio_io::stdin()).lines();
     loop {
@@ -257,6 +257,7 @@ async fn run_interactive(agent: Agent, workspace: PathBuf, catalog: &mut Catalog
             continue;
         }
 
+        let line = search_service.complete_path_refs(&line, 40).await;
         let request = match parse_client_request(
             &serde_json::json!({
                 "v": protocol_version(),
