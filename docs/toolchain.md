@@ -44,3 +44,18 @@ environment.
 - After policy updates, update both:
   - `.pre-commit-config.yaml`
   - `.github/workflows/ci.yml`
+
+## CLI print mode contract
+
+`pi --print --prompt "..."` (or `pi -p --prompt "..."`) is equivalent to `--mode print`.
+
+Stream behavior and exit codes in print mode:
+
+- `stdout`: assistant text only when the request succeeds.
+- `stderr`: parse/runtime/tool/provider errors only.
+- Exit codes:
+  - `0`: success.
+  - `2`: invalid input (for example, missing `--prompt`).
+  - `10`: runtime failure while executing agent logic.
+  - `20`: provider failure surfaced by the runtime.
+  - `21`: tool execution failure surfaced by the runtime.
