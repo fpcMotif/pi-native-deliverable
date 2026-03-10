@@ -1,15 +1,16 @@
 #![forbid(unsafe_code)]
 
 use clap::{Parser, Subcommand, ValueEnum};
+use pi_config::{Catalog, ResourceKind};
 use pi_core::{run_rpc, Agent, AgentConfig};
 use pi_llm::{MockProvider, Provider};
 use pi_protocol::{parse_client_request, protocol_version, to_json_line, ServerEvent};
+use pi_search::{SearchService, SearchServiceConfig};
 use pi_session::SessionStore;
 use pi_tools::{default_registry, Policy};
-use pi_search::{SearchService, SearchServiceConfig};
 use std::io::{self, Write};
 use std::path::PathBuf;
-use tokio::io::{self as tokio_io, AsyncBufReadExt};
+use tokio::io::{self as tokio_io, AsyncBufReadExt, AsyncWriteExt};
 use uuid::Uuid;
 
 #[derive(Parser, Debug)]
@@ -72,8 +73,12 @@ async fn main() {
         return;
     }
 
-    let workspace = cli.workspace.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+    let workspace = cli
+        .workspace
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
     let line_limit = cli.line_limit.unwrap_or(1024 * 1024);
+    let mut catalog = Catalog::discover(&workspace);
+    print_catalog_diagnostics(&catalog);
 
     let provider = build_provider(&cli.provider).await;
 
@@ -138,32 +143,31 @@ async fn main() {
                 let _ = writeln!(io::stdout(), "missing --prompt in print mode");
             }
         }
-        Mode::Interactive => run_interactive(agent).await,
+        Mode::Interactive => run_interactive(agent, workspace, &mut catalog).await,
     }
 }
 
-async fn run_protocol_schema(out: PathBuf) {
+async fn run_protocol_schema(_out: PathBuf) {
     #[cfg(feature = "protocol-schema")]
     {
-        if let Some(parent) = out.parent() {
+        if let Some(parent) = _out.parent() {
             let _ = tokio::fs::create_dir_all(parent).await;
         }
         let schema = pi_protocol::schema_json();
         let text = serde_json::to_string_pretty(&schema).expect("schema");
-        if let Err(err) = tokio::fs::write(&out, text).await {
+        if let Err(err) = tokio::fs::write(&_out, text).await {
             let _ = writeln!(io::stderr(), "failed writing schema: {err}");
             return;
         }
-        let _ = writeln!(io::stdout(), "wrote protocol schema to {}", out.display());
+        let _ = writeln!(io::stdout(), "wrote protocol schema to {}", _out.display());
     }
 
     #[cfg(not(feature = "protocol-schema"))]
     {
-        let _ = tokio_io::write_all(
-            &mut tokio_io::stdout(),
-            b"{\"error\":\"protocol-schema feature is disabled\"}",
-        )
-        .await;
+        let mut stdout = tokio_io::stdout();
+        let _ = stdout
+            .write_all(b"{\"error\":\"protocol-schema feature is disabled\"}")
+            .await;
     }
 }
 
@@ -175,7 +179,7 @@ async fn print_events_to_stdout(events: &[ServerEvent]) {
     }
 }
 
-async fn run_interactive(agent: Agent) {
+async fn run_interactive(agent: Agent, workspace: PathBuf, catalog: &mut Catalog) {
     let mut out = io::stdout();
     let mut lines = tokio_io::BufReader::new(tokio_io::stdin()).lines();
     loop {
@@ -191,18 +195,49 @@ async fn run_interactive(agent: Agent) {
         if line == "/exit" {
             break;
         }
+        if line == "/reload" {
+            *catalog = Catalog::discover(&workspace);
+            print_catalog_diagnostics(catalog);
+            let _ = out
+                .write_all(format!("reloaded {} catalog items\n", catalog.items.len()).as_bytes());
+            continue;
+        }
+        if line == "/skills" {
+            for skill in catalog.enabled_items(ResourceKind::Skill) {
+                let _ =
+                    out.write_all(format!("- {}: {}\n", skill.name, skill.description).as_bytes());
+            }
+            continue;
+        }
+        if let Some(skill_name) = line.strip_prefix("/skill ") {
+            match catalog.load_detail(ResourceKind::Skill, skill_name.trim()) {
+                Some(Ok(text)) => {
+                    let _ = out.write_all(text.as_bytes());
+                    let _ = out.write_all(b"\n");
+                }
+                Some(Err(err)) => {
+                    let _ =
+                        out.write_all(format!("failed loading skill detail: {err}\n").as_bytes());
+                }
+                None => {
+                    let _ = out.write_all(b"unknown or disabled skill\n");
+                }
+            }
+            continue;
+        }
         if line.trim().is_empty() {
             continue;
         }
 
-        let request = match parse_client_request(&serde_json::json!({
-            "v": protocol_version(),
-            "type": "prompt",
-            "id": Uuid::new_v4().to_string(),
-            "message": line,
-        })
-        .to_string())
-        {
+        let request = match parse_client_request(
+            &serde_json::json!({
+                "v": protocol_version(),
+                "type": "prompt",
+                "id": Uuid::new_v4().to_string(),
+                "message": line,
+            })
+            .to_string(),
+        ) {
             Ok(value) => value,
             Err(err) => {
                 let _ = out.write_all(format!("parse error: {err}\n").as_bytes());
@@ -213,7 +248,10 @@ async fn run_interactive(agent: Agent) {
         match agent.handle_request(request).await {
             Ok(events) => {
                 for event in events {
-                    if let ServerEvent::MessageUpdate { delta, done: false, .. } = event {
+                    if let ServerEvent::MessageUpdate {
+                        delta, done: false, ..
+                    } = event
+                    {
                         let _ = out.write_all(delta.as_bytes());
                     } else if let ServerEvent::MessageUpdate { done: true, .. } = event {
                         let _ = out.write_all(b"\n");
@@ -228,6 +266,18 @@ async fn run_interactive(agent: Agent) {
         }
 
         let _ = out.flush();
+    }
+}
+
+fn print_catalog_diagnostics(catalog: &Catalog) {
+    for diagnostic in &catalog.diagnostics {
+        let _ = writeln!(
+            io::stderr(),
+            "config diagnostic [{}] {}: {}",
+            diagnostic.kind.as_str(),
+            diagnostic.path.display(),
+            diagnostic.message
+        );
     }
 }
 

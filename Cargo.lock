@@ -866,6 +866,7 @@ name = "pi"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "pi-config",
  "pi-core",
  "pi-llm",
  "pi-protocol",
@@ -876,6 +877,14 @@ dependencies = [
  "tempfile",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "pi-config"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
