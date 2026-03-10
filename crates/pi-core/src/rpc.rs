@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 
-use pi_protocol::{make_error_event, parse_client_request, protocol_version, to_json_line, ServerEvent};
+use pi_protocol::{
+    make_error_event, parse_client_request, protocol_version, to_json_line, ServerEvent,
+};
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt};
 
 use crate::agent::Agent;
@@ -9,6 +11,15 @@ pub async fn run_rpc(agent: &Agent) -> std::io::Result<()> {
     let mut stdin = io::stdin();
     let mut stdout = io::stdout();
 
+    let tools = {
+        let registry = agent.config.tool_registry.lock().await;
+        registry
+            .list()
+            .iter()
+            .map(|tool| tool.name.clone())
+            .collect::<Vec<_>>()
+    };
+
     let ready = ServerEvent::Ready {
         v: protocol_version(),
         id: Some("ready-event".to_string()),
@@ -16,13 +27,7 @@ pub async fn run_rpc(agent: &Agent) -> std::io::Result<()> {
         capabilities: serde_json::json!({
             "provider": agent.config.provider.name(),
             "models": [agent.config.default_provider_model.clone()],
-            "tools": agent
-                .config
-                .tool_registry
-                .list()
-                .iter()
-                .map(|tool| tool.name.clone())
-                .collect::<Vec<_>>(),
+            "tools": tools,
             "line_limit": agent.config.line_limit,
             "session": {
                 "tree": true,

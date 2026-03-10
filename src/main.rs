@@ -2,14 +2,17 @@
 
 use clap::{Parser, Subcommand, ValueEnum};
 use pi_core::{run_rpc, Agent, AgentConfig};
+use pi_ext::{ExtensionLoader, Policy as ExtensionPolicy};
 use pi_llm::{MockProvider, Provider};
 use pi_protocol::{parse_client_request, protocol_version, to_json_line, ServerEvent};
-use pi_session::SessionStore;
-use pi_tools::{default_registry, Policy};
 use pi_search::{SearchService, SearchServiceConfig};
+use pi_session::SessionStore;
+use pi_tools::{default_registry, Policy, ToolRegistry};
 use std::io::{self, Write};
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::io::{self as tokio_io, AsyncBufReadExt};
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 #[derive(Parser, Debug)]
@@ -72,7 +75,9 @@ async fn main() {
         return;
     }
 
-    let workspace = cli.workspace.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+    let workspace = cli
+        .workspace
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
     let line_limit = cli.line_limit.unwrap_or(1024 * 1024);
 
     let provider = build_provider(&cli.provider).await;
@@ -91,12 +96,17 @@ async fn main() {
     .unwrap_or_else(|err| panic!("failed to create search service: {err}"));
 
     let policy = Policy::safe_defaults(workspace.clone());
-    let registry = default_registry(search_service.clone());
+    let extension_root = workspace.join(".pi").join("extensions");
+    let mut extension_loader = ExtensionLoader::new(extension_root, ExtensionPolicy::safe());
+
+    let (registry, lifecycle_events) =
+        load_registry_with_extensions(&search_service, &mut extension_loader)
+            .unwrap_or_else(|err| panic!("failed to load extensions: {err}"));
 
     let config = AgentConfig {
         provider,
-        tool_registry: registry,
-        session_store: std::sync::Arc::new(tokio::sync::Mutex::new(session_store)),
+        tool_registry: Arc::new(Mutex::new(registry)),
+        session_store: Arc::new(Mutex::new(session_store)),
         tool_policy: policy,
         workspace_root: workspace.clone(),
         default_provider_model: cli.model,
@@ -104,6 +114,7 @@ async fn main() {
     };
 
     let agent = Agent::new(config).await;
+    let _ = agent.append_extension_events(&lifecycle_events).await;
 
     match cli.mode.unwrap_or(Mode::Interactive) {
         Mode::Rpc => {
@@ -138,8 +149,17 @@ async fn main() {
                 let _ = writeln!(io::stdout(), "missing --prompt in print mode");
             }
         }
-        Mode::Interactive => run_interactive(agent).await,
+        Mode::Interactive => run_interactive(agent, search_service, extension_loader).await,
     }
+}
+
+fn load_registry_with_extensions(
+    search_service: &Arc<SearchService>,
+    loader: &mut ExtensionLoader,
+) -> Result<(ToolRegistry, Vec<pi_ext::ExtensionLifecycleEvent>), pi_ext::LoaderError> {
+    let mut registry = default_registry(search_service.clone());
+    let events = loader.initialize(&mut registry)?;
+    Ok((registry, events))
 }
 
 async fn run_protocol_schema(out: PathBuf) {
@@ -159,11 +179,11 @@ async fn run_protocol_schema(out: PathBuf) {
 
     #[cfg(not(feature = "protocol-schema"))]
     {
-        let _ = tokio_io::write_all(
-            &mut tokio_io::stdout(),
-            b"{\"error\":\"protocol-schema feature is disabled\"}",
-        )
-        .await;
+        use tokio::io::AsyncWriteExt;
+        let mut stdout = tokio_io::stdout();
+        let _ = stdout
+            .write_all(b"{\"error\":\"protocol-schema feature is disabled\"}")
+            .await;
     }
 }
 
@@ -175,7 +195,11 @@ async fn print_events_to_stdout(events: &[ServerEvent]) {
     }
 }
 
-async fn run_interactive(agent: Agent) {
+async fn run_interactive(
+    agent: Agent,
+    search_service: Arc<SearchService>,
+    mut loader: ExtensionLoader,
+) {
     let mut out = io::stdout();
     let mut lines = tokio_io::BufReader::new(tokio_io::stdin()).lines();
     loop {
@@ -191,18 +215,38 @@ async fn run_interactive(agent: Agent) {
         if line == "/exit" {
             break;
         }
+        if line == "/reload" {
+            match load_registry_with_extensions(&search_service, &mut loader) {
+                Ok((registry, events)) => {
+                    agent.replace_tool_registry(registry).await;
+                    if agent.append_extension_events(&events).await.is_err() {
+                        let _ = out.write_all(b"reload completed (audit append failed)\n");
+                    } else {
+                        let _ = out.write_all(
+                            format!("reloaded {} extension lifecycle event(s)\n", events.len())
+                                .as_bytes(),
+                        );
+                    }
+                }
+                Err(err) => {
+                    let _ = out.write_all(format!("reload failed: {err}\n").as_bytes());
+                }
+            }
+            continue;
+        }
         if line.trim().is_empty() {
             continue;
         }
 
-        let request = match parse_client_request(&serde_json::json!({
-            "v": protocol_version(),
-            "type": "prompt",
-            "id": Uuid::new_v4().to_string(),
-            "message": line,
-        })
-        .to_string())
-        {
+        let request = match parse_client_request(
+            &serde_json::json!({
+                "v": protocol_version(),
+                "type": "prompt",
+                "id": Uuid::new_v4().to_string(),
+                "message": line,
+            })
+            .to_string(),
+        ) {
             Ok(value) => value,
             Err(err) => {
                 let _ = out.write_all(format!("parse error: {err}\n").as_bytes());
@@ -213,7 +257,10 @@ async fn run_interactive(agent: Agent) {
         match agent.handle_request(request).await {
             Ok(events) => {
                 for event in events {
-                    if let ServerEvent::MessageUpdate { delta, done: false, .. } = event {
+                    if let ServerEvent::MessageUpdate {
+                        delta, done: false, ..
+                    } = event
+                    {
                         let _ = out.write_all(delta.as_bytes());
                     } else if let ServerEvent::MessageUpdate { done: true, .. } = event {
                         let _ = out.write_all(b"\n");
