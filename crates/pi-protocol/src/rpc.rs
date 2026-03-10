@@ -472,7 +472,7 @@ pub fn parse_client_request(raw: &str) -> Result<ClientRequest, ProtocolError> {
         .to_ascii_lowercase();
 
     let request_type = raw_request_type.as_str();
-    let _ = validate_version(
+    validate_version(
         raw_map
             .get("v")
             .and_then(Value::as_str)

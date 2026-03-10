@@ -4,8 +4,8 @@ use pi_protocol::session::{SessionEntry, SessionEntryKind, SessionLog};
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
-use std::fs::{self, OpenOptions};
-use std::io::{self, BufRead};
+use std::fs;
+use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
@@ -86,38 +86,48 @@ impl SessionStore {
             fs::create_dir_all(parent)?;
         }
 
-        let entries = if path.exists() {
-            let mut entries = Vec::new();
-            let file = fs::File::open(&path)?;
-            let reader = io::BufReader::new(file);
-            for line in reader.lines() {
-                let line = line?;
-                let raw = line.trim();
-                if raw.is_empty() {
-                    continue;
-                }
+        let entries = if tokio::fs::try_exists(&path).await.unwrap_or(false) {
+            let path_clone = path.clone();
+            tokio::task::spawn_blocking(move || -> Result<Vec<SessionEntry>> {
+                let mut entries = Vec::new();
+                let file = std::fs::File::open(&path_clone)?;
+                use std::io::BufRead;
+                let mut reader = std::io::BufReader::new(file);
+                let mut line = String::new();
 
-                match serde_json::from_str::<SessionEntry>(raw) {
-                    Ok(value) => entries.push(value),
-                    Err(parse_err) => {
-                        let legacy =
-                            serde_json::from_str::<LegacyLog>(raw).map_err(|_| parse_err)?;
-                        entries.extend(legacy.entries);
+                while reader.read_line(&mut line)? > 0 {
+                    let raw = line.trim();
+                    if raw.is_empty() {
+                        line.clear();
+                        continue;
                     }
+
+                    match serde_json::from_str::<SessionEntry>(raw) {
+                        Ok(value) => entries.push(value),
+                        Err(parse_err) => {
+                            let legacy =
+                                serde_json::from_str::<LegacyLog>(raw).map_err(|_| parse_err)?;
+                            entries.extend(legacy.entries);
+                        }
+                    }
+                    line.clear();
                 }
-            }
-            entries
+                Ok(entries)
+            })
+            .await
+            .map_err(|e| SessionError::InvalidPath(e.to_string()))??
         } else {
-            OpenOptions::new().create(true).append(true).open(&path)?;
+            tokio::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .await?;
             Vec::new()
         };
 
         let mut store = Self {
             path,
-            log: SessionLog {
-                entries,
-                ..Default::default()
-            },
+            log: SessionLog { entries },
             entry_by_id: HashMap::new(),
             children: HashMap::new(),
             roots: Vec::new(),
@@ -257,7 +267,7 @@ impl SessionStore {
         self.log
             .entries
             .iter()
-            .map(|entry| canonical_json(entry))
+            .map(canonical_json)
             .collect::<Result<Vec<_>>>()
             .map(|lines| lines.join("\n"))
     }

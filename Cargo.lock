@@ -1108,6 +1108,7 @@ dependencies = [
 name = "pi-session"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "pi-protocol",
  "serde",
  "serde_json",
