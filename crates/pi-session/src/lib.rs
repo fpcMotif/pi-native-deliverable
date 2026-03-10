@@ -108,10 +108,7 @@ impl SessionStore {
 
         let mut store = Self {
             path,
-            log: SessionLog {
-                entries,
-
-            },
+            log: SessionLog { entries },
             entry_by_id: HashMap::new(),
             children: HashMap::new(),
             roots: Vec::new(),
