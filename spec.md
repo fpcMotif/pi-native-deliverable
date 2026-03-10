@@ -138,7 +138,17 @@ The config loader produces a single resolved `EffectiveConfig` with provenance:
    `pi --mode rpc`  
    - headless line-delimited JSON over stdin/stdout (for IDEs, bots, scripts).
 
-### 4.2 Command palette and slash commands
+### 4.2 Non-interactive exit codes
+
+For non-interactive CLI invocations (for example, `pi -p "..."`), exit codes are stable and machine-readable:
+
+- `0`: success
+- `2`: parse/CLI argument error
+- `3`: provider or tool execution error
+- `4`: missing prompt in print mode
+- `5`: protocol violation (unexpected/malformed event sequence)
+
+### 4.3 Command palette and slash commands
 
 Slash commands are first-class (rendered in completion list). Minimum built-ins:
 
