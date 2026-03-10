@@ -18,3 +18,9 @@ tokio.workspace = true
 [[bin]]
 name = "benchmark"
 path = "src/bin_benchmark.rs"
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "session_load"
+harness = false
