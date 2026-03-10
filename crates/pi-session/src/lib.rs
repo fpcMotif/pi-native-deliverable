@@ -108,10 +108,7 @@ impl SessionStore {
 
         let mut store = Self {
             path,
-            log: SessionLog {
-                entries,
-                ..Default::default()
-            },
+            log: SessionLog { entries },
             entry_by_id: HashMap::new(),
             children: HashMap::new(),
             roots: Vec::new(),
@@ -251,7 +248,7 @@ impl SessionStore {
         self.log
             .entries
             .iter()
-            .map(|entry| canonical_json(entry))
+            .map(canonical_json)
             .collect::<Result<Vec<_>>>()
             .map(|lines| lines.join("\n"))
     }
@@ -398,6 +395,62 @@ mod tests {
         assert_eq!(store.get_branch_head(), None);
 
         // Clean up
+        let _ = fs::remove_file(session_path);
+    }
+
+    #[tokio::test]
+    async fn test_prune_to_depth() {
+        let temp_dir = env::temp_dir();
+        let session_path = temp_dir.join(format!("{}.jsonl", Uuid::new_v4()));
+        let mut store = SessionStore::new(&session_path).await.unwrap();
+
+        // Create a chain of entries: root -> child1 -> child2 -> child3
+        let root_id = store
+            .append(SessionEntryKind::UserMessage {
+                text: "root".to_string(),
+            })
+            .await
+            .unwrap();
+        let child1_id = store
+            .append(SessionEntryKind::UserMessage {
+                text: "child1".to_string(),
+            })
+            .await
+            .unwrap();
+        let child2_id = store
+            .append(SessionEntryKind::UserMessage {
+                text: "child2".to_string(),
+            })
+            .await
+            .unwrap();
+        let child3_id = store
+            .append(SessionEntryKind::UserMessage {
+                text: "child3".to_string(),
+            })
+            .await
+            .unwrap();
+
+        // depth 0
+        assert_eq!(store.prune_to_depth(0), Vec::<Uuid>::new());
+
+        // depth 1
+        assert_eq!(store.prune_to_depth(1), vec![child3_id]);
+
+        // depth 2
+        assert_eq!(store.prune_to_depth(2), vec![child3_id, child2_id]);
+
+        // depth 4
+        assert_eq!(
+            store.prune_to_depth(4),
+            vec![child3_id, child2_id, child1_id, root_id]
+        );
+
+        // depth 10 (more than available)
+        assert_eq!(
+            store.prune_to_depth(10),
+            vec![child3_id, child2_id, child1_id, root_id]
+        );
+
         let _ = fs::remove_file(session_path);
     }
 }

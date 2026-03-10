@@ -60,10 +60,14 @@ fn extension_policy_allow_does_not_affect_other_capabilities() {
 #[test]
 fn extension_policy_deny_allow_interaction() {
     // deny then allow should be allowed
-    let policy = Policy::default().deny(Capability::FileRead).allow(Capability::FileRead);
+    let policy = Policy::default()
+        .deny(Capability::FileRead)
+        .allow(Capability::FileRead);
     assert!(policy.check(Capability::FileRead).allowed);
 
     // allow then deny should be denied
-    let policy = Policy::default().allow(Capability::NetworkHttp).deny(Capability::NetworkHttp);
+    let policy = Policy::default()
+        .allow(Capability::NetworkHttp)
+        .deny(Capability::NetworkHttp);
     assert!(!policy.check(Capability::NetworkHttp).allowed);
 }
