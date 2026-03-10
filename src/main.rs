@@ -275,7 +275,7 @@ async fn build_provider(kind: &str) -> std::sync::Arc<dyn Provider> {
                 let base = std::env::var("PI_OPENAI_URL")
                     .unwrap_or_else(|_| "http://127.0.0.1:8000".to_string());
                 let key = std::env::var("OPENAI_API_KEY").ok();
-                return std::sync::Arc::new(pi_llm::openai::OpenAIProvider::new(base, key));
+                std::sync::Arc::new(pi_llm::openai::OpenAIProvider::new(base, key))
             }
             #[cfg(not(feature = "openai"))]
             {
