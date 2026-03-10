@@ -2,14 +2,17 @@
 
 use clap::{Parser, Subcommand, ValueEnum};
 use pi_core::{run_rpc, Agent, AgentConfig};
+use pi_ext::{discover_skills, ExtensionRuntime};
 use pi_llm::{MockProvider, Provider};
 use pi_protocol::{parse_client_request, protocol_version, to_json_line, ServerEvent};
+use pi_search::{SearchService, SearchServiceConfig};
 use pi_session::SessionStore;
 use pi_tools::{default_registry, Policy};
-use pi_search::{SearchService, SearchServiceConfig};
 use std::io::{self, Write};
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::io::{self as tokio_io, AsyncBufReadExt};
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 #[derive(Parser, Debug)]
@@ -72,7 +75,9 @@ async fn main() {
         return;
     }
 
-    let workspace = cli.workspace.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+    let workspace = cli
+        .workspace
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
     let line_limit = cli.line_limit.unwrap_or(1024 * 1024);
 
     let provider = build_provider(&cli.provider).await;
@@ -93,6 +98,21 @@ async fn main() {
     let policy = Policy::safe_defaults(workspace.clone());
     let registry = default_registry(search_service.clone());
 
+    let extension_roots = extension_roots(&workspace);
+    let mut extension_runtime = ExtensionRuntime::new(pi_ext::Policy::safe());
+    let _ = extension_runtime.load_from_roots(&extension_roots);
+    let extension_runtime = Arc::new(Mutex::new(extension_runtime));
+
+    let skills = discover_skills(&workspace);
+    if !skills.warnings.is_empty() {
+        let _ = writeln!(
+            io::stderr(),
+            "skills loaded={}, warnings={}",
+            skills.loaded.len(),
+            skills.warnings.len()
+        );
+    }
+
     let config = AgentConfig {
         provider,
         tool_registry: registry,
@@ -101,6 +121,7 @@ async fn main() {
         workspace_root: workspace.clone(),
         default_provider_model: cli.model,
         line_limit,
+        extension_runtime: Some(extension_runtime.clone()),
     };
 
     let agent = Agent::new(config).await;
@@ -138,7 +159,7 @@ async fn main() {
                 let _ = writeln!(io::stdout(), "missing --prompt in print mode");
             }
         }
-        Mode::Interactive => run_interactive(agent).await,
+        Mode::Interactive => run_interactive(agent, extension_runtime, workspace).await,
     }
 }
 
@@ -159,11 +180,12 @@ async fn run_protocol_schema(out: PathBuf) {
 
     #[cfg(not(feature = "protocol-schema"))]
     {
-        let _ = tokio_io::write_all(
-            &mut tokio_io::stdout(),
-            b"{\"error\":\"protocol-schema feature is disabled\"}",
-        )
-        .await;
+        use tokio::io::AsyncWriteExt;
+
+        let mut stdout = tokio_io::stdout();
+        let _ = stdout
+            .write_all(b"{\"error\":\"protocol-schema feature is disabled\"}")
+            .await;
     }
 }
 
@@ -175,7 +197,11 @@ async fn print_events_to_stdout(events: &[ServerEvent]) {
     }
 }
 
-async fn run_interactive(agent: Agent) {
+async fn run_interactive(
+    agent: Agent,
+    extension_runtime: Arc<Mutex<ExtensionRuntime>>,
+    workspace: PathBuf,
+) {
     let mut out = io::stdout();
     let mut lines = tokio_io::BufReader::new(tokio_io::stdin()).lines();
     loop {
@@ -191,18 +217,37 @@ async fn run_interactive(agent: Agent) {
         if line == "/exit" {
             break;
         }
+        if line == "/reload" {
+            let roots = extension_roots(&workspace);
+            let mut runtime = extension_runtime.lock().await;
+            let ext_count = runtime.reload(&roots).unwrap_or(0);
+            drop(runtime);
+
+            let skills = discover_skills(&workspace);
+            let _ = out.write_all(
+                format!(
+                    "reloaded extensions={}, skills={}, skill_warnings={}\n",
+                    ext_count,
+                    skills.loaded.len(),
+                    skills.warnings.len()
+                )
+                .as_bytes(),
+            );
+            continue;
+        }
         if line.trim().is_empty() {
             continue;
         }
 
-        let request = match parse_client_request(&serde_json::json!({
-            "v": protocol_version(),
-            "type": "prompt",
-            "id": Uuid::new_v4().to_string(),
-            "message": line,
-        })
-        .to_string())
-        {
+        let request = match parse_client_request(
+            &serde_json::json!({
+                "v": protocol_version(),
+                "type": "prompt",
+                "id": Uuid::new_v4().to_string(),
+                "message": line,
+            })
+            .to_string(),
+        ) {
             Ok(value) => value,
             Err(err) => {
                 let _ = out.write_all(format!("parse error: {err}\n").as_bytes());
@@ -213,7 +258,10 @@ async fn run_interactive(agent: Agent) {
         match agent.handle_request(request).await {
             Ok(events) => {
                 for event in events {
-                    if let ServerEvent::MessageUpdate { delta, done: false, .. } = event {
+                    if let ServerEvent::MessageUpdate {
+                        delta, done: false, ..
+                    } = event
+                    {
                         let _ = out.write_all(delta.as_bytes());
                     } else if let ServerEvent::MessageUpdate { done: true, .. } = event {
                         let _ = out.write_all(b"\n");
@@ -229,6 +277,14 @@ async fn run_interactive(agent: Agent) {
 
         let _ = out.flush();
     }
+}
+
+fn extension_roots(workspace: &std::path::Path) -> Vec<PathBuf> {
+    let mut roots = vec![workspace.join(".pi/extensions")];
+    if let Ok(home) = std::env::var("HOME") {
+        roots.push(PathBuf::from(home).join(".pi/extensions"));
+    }
+    roots
 }
 
 async fn build_provider(kind: &str) -> std::sync::Arc<dyn Provider> {

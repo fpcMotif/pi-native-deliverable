@@ -1,11 +1,8 @@
+use pi_tools::ToolError;
+use pi_tools::{is_dangerous_command, BashTool, Policy, ReadTool, Tool, ToolCall, WriteTool};
 use serde_json::json;
 use std::fs;
 use std::path::Path;
-use pi_tools::{
-    is_dangerous_command,
-    BashTool, Policy, ReadTool, Tool, ToolCall, WriteTool,
-};
-use pi_tools::ToolError;
 
 /// Tool sandbox: deny writing to secrets by default policy.
 #[test]
@@ -92,3 +89,4 @@ fn bash_dangerous_command_detector_is_stable() {
     assert!(is_dangerous_command("mkfs /dev/sda"));
     assert!(is_dangerous_command(":(){ :|:& };:"));
     assert!(!is_dangerous_command("echo safe"));
+}

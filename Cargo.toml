@@ -43,6 +43,7 @@ rust-version.workspace = true
 tokio.workspace = true
 clap.workspace = true
 pi-core = { path = "crates/pi-core" }
+pi-ext = { path = "crates/pi-ext" }
 pi-protocol = { path = "crates/pi-protocol" }
 pi-session = { path = "crates/pi-session" }
 pi-tools = { path = "crates/pi-tools" }
@@ -53,6 +54,7 @@ uuid.workspace = true
 
 [features]
 default = ["mock-llm", "openai"]
+slack-bot = []
 mock-llm = ["pi-llm/mock-llm"]
 openai = ["pi-llm/openai"]
 protocol-schema = ["pi-protocol/schema"]

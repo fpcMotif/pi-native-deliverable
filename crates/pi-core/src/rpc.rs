@@ -1,11 +1,25 @@
 #![forbid(unsafe_code)]
 
-use pi_protocol::{make_error_event, parse_client_request, protocol_version, to_json_line, ServerEvent};
+use pi_protocol::{
+    make_error_event, parse_client_request, protocol_version, to_json_line, ServerEvent,
+};
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt};
 
 use crate::agent::Agent;
 
 pub async fn run_rpc(agent: &Agent) -> std::io::Result<()> {
+    let extension_tools = if let Some(runtime) = &agent.config.extension_runtime {
+        runtime.lock().await.tool_names()
+    } else {
+        Vec::new()
+    };
+
+    let extension_commands = if let Some(runtime) = &agent.config.extension_runtime {
+        runtime.lock().await.command_names()
+    } else {
+        Vec::new()
+    };
+
     let mut stdin = io::stdin();
     let mut stdout = io::stdout();
 
@@ -22,7 +36,9 @@ pub async fn run_rpc(agent: &Agent) -> std::io::Result<()> {
                 .list()
                 .iter()
                 .map(|tool| tool.name.clone())
+                .chain(extension_tools.into_iter())
                 .collect::<Vec<_>>(),
+            "commands": extension_commands,
             "line_limit": agent.config.line_limit,
             "session": {
                 "tree": true,
