@@ -981,10 +981,7 @@ mod tests {
             max_stdout_bytes: 1024,
             max_stderr_bytes: 1024,
             command_timeout_ms: 1000,
-            deny_write_paths: vec![
-                "secret.txt".to_string(),
-                "FORBIDDEN_DIR".to_string(),
-            ],
+            deny_write_paths: vec!["secret.txt".to_string(), "FORBIDDEN_DIR".to_string()],
             max_file_size: 1024,
         };
 
