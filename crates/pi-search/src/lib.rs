@@ -6,6 +6,7 @@ use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -150,6 +151,14 @@ pub struct SearchService {
     git_index: RwLock<HashMap<PathBuf, String>>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedIndex {
+    version: u32,
+    entries: Vec<IndexedFile>,
+}
+
+const INDEX_SCHEMA_VERSION: u32 = 1;
+
 impl SearchService {
     pub async fn new(config: SearchServiceConfig) -> SearchResult<std::sync::Arc<Self>> {
         let service = std::sync::Arc::new(Self {
@@ -158,9 +167,12 @@ impl SearchService {
             git_index: RwLock::new(HashMap::new()),
         });
 
-        service.rebuild_index().await?;
+        service.load_index_from_disk().await?;
         if service.config.use_git_status {
             service.refresh_git_status().await?;
+        }
+        if service.index.read().await.is_empty() {
+            service.rebuild_index().await?;
         }
 
         if service.config.watcher_enabled {
@@ -175,56 +187,71 @@ impl SearchService {
         let root = self.config.workspace_root.clone();
 
         let mut walker = WalkBuilder::new(&root);
-        walker.hidden(false).git_ignore(true).parents(true).build().for_each(|result| {
-            let entry = match result {
-                Ok(value) => value,
-                Err(_) => return,
-            };
-            let path = entry.path();
-            if !path.is_file() {
-                return;
-            }
+        walker
+            .hidden(false)
+            .git_ignore(true)
+            .parents(true)
+            .build()
+            .for_each(|result| {
+                let entry = match result {
+                    Ok(value) => value,
+                    Err(_) => return,
+                };
+                let path = entry.path();
+                if !path.is_file() {
+                    return;
+                }
 
-            let metadata = match path.metadata() {
-                Ok(value) => value,
-                Err(_) => return,
-            };
-            if metadata.len() > self.config.max_file_size {
-                return;
-            }
+                let metadata = match path.metadata() {
+                    Ok(value) => value,
+                    Err(_) => return,
+                };
+                if metadata.len() > self.config.max_file_size {
+                    return;
+                }
 
-            let relative = path
-                .strip_prefix(&root)
-                .unwrap_or(path)
-                .to_string_lossy()
-                .to_string();
-            if should_ignore_path(&relative) {
-                return;
-            }
+                let relative = path
+                    .strip_prefix(&root)
+                    .unwrap_or(path)
+                    .to_string_lossy()
+                    .to_string();
+                if should_ignore_path(&relative) {
+                    return;
+                }
 
-            let modified_ms = metadata
-                .modified()
-                .unwrap_or_else(|_| SystemTime::now())
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
+                let modified_ms = metadata
+                    .modified()
+                    .unwrap_or_else(|_| SystemTime::now())
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
 
-            let frecency = self
-                .git_index
-                .try_read()
-                .ok()
-                .map(|map| map.get(path).map(|status| status_to_frecency(status)).unwrap_or(0))
-                .unwrap_or(0);
+                let frecency = self
+                    .git_index
+                    .try_read()
+                    .ok()
+                    .map(|map| {
+                        map.get(path)
+                            .map(|status| status_to_frecency(status))
+                            .unwrap_or(0)
+                    })
+                    .unwrap_or(0);
 
-            items.push(IndexedFile {
-                relative_path: relative,
-                absolute_path: path.to_path_buf(),
-                size_bytes: metadata.len(),
-                mtime_ms: modified_ms,
-                frecency,
-                git_status: None,
+                let git_status = self
+                    .git_index
+                    .try_read()
+                    .ok()
+                    .and_then(|map| map.get(path).cloned());
+
+                items.push(IndexedFile {
+                    relative_path: relative,
+                    absolute_path: path.to_path_buf(),
+                    size_bytes: metadata.len(),
+                    mtime_ms: modified_ms,
+                    frecency,
+                    git_status,
+                });
             });
-        });
 
         items.sort_by(|left, right| {
             left.relative_path
@@ -234,6 +261,8 @@ impl SearchService {
 
         let mut index = self.index.write().await;
         *index = items;
+        drop(index);
+        self.persist_index_to_disk().await?;
         Ok(())
     }
 
@@ -259,7 +288,7 @@ impl SearchService {
                 if let Ok(event) = event {
                     match event.kind {
                         EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {
-                            service.rebuild_index().await.ok();
+                            service.apply_fs_event(event.paths).await.ok();
                             if service.config.use_git_status {
                                 service.refresh_git_status().await.ok();
                             }
@@ -330,6 +359,13 @@ impl SearchService {
                 .score
                 .partial_cmp(&left.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| right.frecency.cmp(&left.frecency))
+                .then_with(|| {
+                    git_status_rank(right.git_status.as_deref())
+                        .cmp(&git_status_rank(left.git_status.as_deref()))
+                })
+                .then_with(|| right.mtime_ms.cmp(&left.mtime_ms))
+                .then_with(|| left.relative_path.len().cmp(&right.relative_path.len()))
                 .then_with(|| left.relative_path.cmp(&right.relative_path))
         });
 
@@ -341,7 +377,11 @@ impl SearchService {
             None
         };
 
-        Ok(SearchResponse { items, token, stats })
+        Ok(SearchResponse {
+            items,
+            token,
+            stats,
+        })
     }
 
     pub async fn grep(
@@ -395,9 +435,7 @@ impl SearchService {
                         let regex = regex.as_ref().expect("regex");
                         regex.is_match(line)
                     }
-                    GrepMode::Fuzzy => {
-                        normalized_levenshtein(&line.to_lowercase(), &lower) >= 0.72
-                    }
+                    GrepMode::Fuzzy => normalized_levenshtein(&line.to_lowercase(), &lower) >= 0.72,
                 };
 
                 if !matched {
@@ -416,7 +454,8 @@ impl SearchService {
                     .take(2)
                     .map(|line| (*line).to_string())
                     .collect::<Vec<_>>();
-                let byte_offset: usize = lines.iter().take(line_idx).map(|line| line.len() + 1).sum();
+                let byte_offset: usize =
+                    lines.iter().take(line_idx).map(|line| line.len() + 1).sum();
 
                 matches.push(GrepMatch {
                     path: entry.relative_path.clone(),
@@ -476,7 +515,153 @@ impl SearchService {
             status_map.insert(absolute, code.to_string());
         }
 
+        let mut index = self.index.write().await;
+        for entry in index.iter_mut() {
+            entry.git_status = status_map.get(&entry.absolute_path).cloned();
+            entry.frecency = entry
+                .git_status
+                .as_deref()
+                .map(status_to_frecency)
+                .unwrap_or(0);
+        }
+        index.sort_by(|left, right| {
+            left.relative_path
+                .cmp(&right.relative_path)
+                .then(left.mtime_ms.cmp(&right.mtime_ms))
+        });
+        drop(index);
+        self.persist_index_to_disk().await?;
+
         Ok(())
+    }
+
+    async fn load_index_from_disk(&self) -> SearchResult<()> {
+        let path = self.index_file_path();
+        let bytes = match fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(err) => return Err(err.into()),
+        };
+
+        let mut persisted: PersistedIndex = match serde_json::from_slice(&bytes) {
+            Ok(persisted) => persisted,
+            Err(_) => return Ok(()),
+        };
+
+        if persisted.version != INDEX_SCHEMA_VERSION {
+            return Ok(());
+        }
+
+        persisted.entries.retain(|entry| {
+            if !entry.absolute_path.exists() || should_ignore_path(&entry.relative_path) {
+                return false;
+            }
+            entry.size_bytes <= self.config.max_file_size
+        });
+        persisted.entries.sort_by(|left, right| {
+            left.relative_path
+                .cmp(&right.relative_path)
+                .then(left.mtime_ms.cmp(&right.mtime_ms))
+        });
+
+        let mut index = self.index.write().await;
+        *index = persisted.entries;
+        Ok(())
+    }
+
+    async fn persist_index_to_disk(&self) -> SearchResult<()> {
+        let pi_dir = self.config.workspace_root.join(".pi");
+        fs::create_dir_all(&pi_dir)?;
+
+        let path = self.index_file_path();
+        let tmp_path = pi_dir.join("search-index.json.tmp");
+        let payload = {
+            let index = self.index.read().await;
+            serde_json::to_vec(&PersistedIndex {
+                version: INDEX_SCHEMA_VERSION,
+                entries: index.clone(),
+            })
+            .map_err(|err| {
+                SearchError::InvalidToken(format!("index serialization failed: {err}"))
+            })?
+        };
+        fs::write(&tmp_path, payload)?;
+        fs::rename(tmp_path, path)?;
+        Ok(())
+    }
+
+    async fn apply_fs_event(&self, paths: Vec<PathBuf>) -> SearchResult<()> {
+        if paths.is_empty() {
+            return self.rebuild_index().await;
+        }
+
+        let mut index = self.index.write().await;
+        for path in paths {
+            if path.is_dir() {
+                continue;
+            }
+            if !path.starts_with(&self.config.workspace_root) {
+                continue;
+            }
+            let relative = path
+                .strip_prefix(&self.config.workspace_root)
+                .unwrap_or(path.as_path())
+                .to_string_lossy()
+                .to_string();
+            if should_ignore_path(&relative) {
+                continue;
+            }
+
+            index.retain(|entry| entry.absolute_path != path);
+            if !path.exists() {
+                continue;
+            }
+
+            let metadata = match path.metadata() {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+            if metadata.len() > self.config.max_file_size {
+                continue;
+            }
+            let modified_ms = metadata
+                .modified()
+                .unwrap_or_else(|_| SystemTime::now())
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+
+            let git_status = self
+                .git_index
+                .try_read()
+                .ok()
+                .and_then(|map| map.get(&path).cloned());
+
+            index.push(IndexedFile {
+                relative_path: relative,
+                absolute_path: path,
+                size_bytes: metadata.len(),
+                mtime_ms: modified_ms,
+                frecency: git_status.as_deref().map(status_to_frecency).unwrap_or(0),
+                git_status,
+            });
+        }
+
+        index.sort_by(|left, right| {
+            left.relative_path
+                .cmp(&right.relative_path)
+                .then(left.mtime_ms.cmp(&right.mtime_ms))
+        });
+        drop(index);
+        self.persist_index_to_disk().await?;
+        Ok(())
+    }
+
+    fn index_file_path(&self) -> PathBuf {
+        self.config
+            .workspace_root
+            .join(".pi")
+            .join("search-index.json")
     }
 }
 
@@ -580,6 +765,15 @@ fn frecency_score(v: u32) -> f64 {
     (v as f64).min(20.0) / 200.0
 }
 
+fn git_status_rank(status: Option<&str>) -> u8 {
+    match status {
+        Some("MM") | Some("M") => 3,
+        Some("AM") | Some("A") => 2,
+        Some("??") => 1,
+        _ => 0,
+    }
+}
+
 fn status_to_frecency(status: &str) -> u32 {
     match status {
         "M" | "MM" => 10,
@@ -598,12 +792,16 @@ pub fn decode_token(token: &str) -> SearchResult<usize> {
         .decode(token)
         .map_err(|err| SearchError::InvalidToken(err.to_string()))?;
     if bytes.len() != 8 {
-        return Err(SearchError::InvalidToken("token payload size mismatch".to_string()));
+        return Err(SearchError::InvalidToken(
+            "token payload size mismatch".to_string(),
+        ));
     }
     let value = u64::from_be_bytes(
         bytes
             .try_into()
             .map_err(|_| SearchError::InvalidToken("invalid token payload".to_string()))?,
     );
-    Ok(value.try_into().map_err(|_| SearchError::InvalidToken("token overflow".to_string()))?)
+    Ok(value
+        .try_into()
+        .map_err(|_| SearchError::InvalidToken("token overflow".to_string()))?)
 }
