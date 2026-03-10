@@ -65,7 +65,8 @@ impl SessionStore {
         // Canonicalize the parent to resolve symlinks (e.g. /tmp -> /private/tmp on macOS)
         let resolved = if let Some(parent) = normalized.parent() {
             fs::create_dir_all(parent)?;
-            parent.canonicalize()
+            parent
+                .canonicalize()
                 .map(|p| p.join(normalized.file_name().unwrap_or_default()))
                 .unwrap_or(normalized.clone())
         } else {

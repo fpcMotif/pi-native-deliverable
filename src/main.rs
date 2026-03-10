@@ -331,7 +331,12 @@ async fn print_events_to_stdout(events: &[ServerEvent]) {
     }
 }
 
-async fn run_interactive(agent: Agent, workspace: PathBuf, catalog: &mut Catalog, search_service: std::sync::Arc<SearchService>) {
+async fn run_interactive(
+    agent: Agent,
+    workspace: PathBuf,
+    catalog: &mut Catalog,
+    search_service: std::sync::Arc<SearchService>,
+) {
     let mut out = io::stdout();
     let mut lines = tokio_io::BufReader::new(tokio_io::stdin()).lines();
     loop {
@@ -344,7 +349,14 @@ async fn run_interactive(agent: Agent, workspace: PathBuf, catalog: &mut Catalog
             Err(_) => break,
         };
 
-        if handle_slash_command(&line, &agent, &agent.config.default_provider_model, &mut out).await {
+        if handle_slash_command(
+            &line,
+            &agent,
+            &agent.config.default_provider_model,
+            &mut out,
+        )
+        .await
+        {
             break;
         }
         if line == "/reload" {

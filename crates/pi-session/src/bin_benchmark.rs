@@ -7,9 +7,12 @@ async fn main() {
     let mut store = SessionStore::new("test_session.jsonl").await.unwrap();
     // populate
     for i in 0..10000 {
-        store.append(pi_protocol::session::SessionEntryKind::UserMessage {
-            text: "hello world ".repeat(10).to_string(),
-        }).await.unwrap();
+        store
+            .append(pi_protocol::session::SessionEntryKind::UserMessage {
+                text: "hello world ".repeat(10).to_string(),
+            })
+            .await
+            .unwrap();
     }
 
     let start = Instant::now();

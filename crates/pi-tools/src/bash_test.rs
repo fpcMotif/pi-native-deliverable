@@ -8,10 +8,16 @@ mod tests {
         let policy = Policy::safe_defaults(std::env::current_dir().unwrap());
         let call = make_call("bash", json!({"command": "echo 'hello bash'"}));
         let tool = BashTool;
-        let res = tool.execute(&call, &policy, std::path::Path::new(".")).unwrap();
+        let res = tool
+            .execute(&call, &policy, std::path::Path::new("."))
+            .unwrap();
         println!("result: {:?}", res);
         assert_eq!(res.status.as_str(), "ok");
-        assert!(res.stdout.contains("hello bash"), "stdout was: {:?}", res.stdout);
+        assert!(
+            res.stdout.contains("hello bash"),
+            "stdout was: {:?}",
+            res.stdout
+        );
     }
 
     #[test]
@@ -20,7 +26,9 @@ mod tests {
         policy.command_timeout_ms = 100;
         let call = make_call("bash", json!({"command": "sleep 1"}));
         let tool = BashTool;
-        let res = tool.execute(&call, &policy, std::path::Path::new(".")).unwrap();
+        let res = tool
+            .execute(&call, &policy, std::path::Path::new("."))
+            .unwrap();
         assert_eq!(res.status.as_str(), "error");
         assert_eq!(res.error, Some("command timed out".to_string()));
     }
