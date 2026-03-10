@@ -968,3 +968,58 @@ pub fn is_dangerous_command(command: &str) -> bool {
     let low = command.to_lowercase();
     low.contains("rm -rf") || low.contains("mkfs") || low.contains(":(){ :|:& };:")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_policy_can_write_path() {
+        let policy = Policy {
+            preset: PolicyPreset::Safe,
+            workspace_root: PathBuf::from("/workspace"),
+            max_stdout_bytes: 1024,
+            max_stderr_bytes: 1024,
+            command_timeout_ms: 1000,
+            deny_write_paths: vec![
+                "secret.txt".to_string(),
+                "FORBIDDEN_DIR".to_string(),
+            ],
+            max_file_size: 1024,
+        };
+
+        // 1. Allowed paths
+        assert!(policy.can_write_path(Path::new("normal_file.txt")));
+        assert!(policy.can_write_path(Path::new("dir/subdir/file.txt")));
+        assert!(policy.can_write_path(Path::new("file_with_secret.txt_suffix")));
+        assert!(policy.can_write_path(Path::new("my_id_rsa"))); // should be exact match
+
+        // 2. Deny list matches (case-insensitive)
+        assert!(!policy.can_write_path(Path::new("secret.txt")));
+        assert!(!policy.can_write_path(Path::new("SECRET.TXT")));
+        assert!(!policy.can_write_path(Path::new("dir/secret.txt")));
+        assert!(!policy.can_write_path(Path::new("forbidden_dir/file.txt")));
+
+        // 3. Hardcoded sensitive directories
+        assert!(!policy.can_write_path(Path::new(".git/config")));
+        assert!(!policy.can_write_path(Path::new("project/.git/HEAD")));
+        assert!(!policy.can_write_path(Path::new(".ssh/authorized_keys")));
+        assert!(!policy.can_write_path(Path::new(".aws/credentials")));
+
+        // 4. Sensitive file prefixes (env files)
+        assert!(!policy.can_write_path(Path::new(".env")));
+        assert!(!policy.can_write_path(Path::new(".env.local")));
+        assert!(!policy.can_write_path(Path::new(".env.development")));
+        assert!(!policy.can_write_path(Path::new("project/.env.test")));
+
+        // 5. Specific SSH keys
+        assert!(!policy.can_write_path(Path::new("id_rsa")));
+        assert!(!policy.can_write_path(Path::new("id_rsa.pub")));
+        assert!(!policy.can_write_path(Path::new("id_ed25519")));
+        assert!(!policy.can_write_path(Path::new("dir/id_ecdsa.pub")));
+
+        // 6. Subdirectories of denied paths
+        assert!(!policy.can_write_path(Path::new("forbidden_dir/subdir/file.txt")));
+        assert!(!policy.can_write_path(Path::new(".git/objects/00/file")));
+    }
+}
