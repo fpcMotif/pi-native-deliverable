@@ -4,12 +4,13 @@ use clap::{Parser, Subcommand, ValueEnum};
 use pi_core::{run_rpc, Agent, AgentConfig};
 use pi_llm::{MockProvider, Provider};
 use pi_protocol::{parse_client_request, protocol_version, to_json_line, ServerEvent};
+use pi_search::{SearchQuery, SearchService, SearchServiceConfig};
 use pi_session::SessionStore;
 use pi_tools::{default_registry, Policy};
-use pi_search::{SearchService, SearchServiceConfig};
 use std::io::{self, Write};
 use std::path::PathBuf;
-use tokio::io::{self as tokio_io, AsyncBufReadExt};
+use tokio::io::{self as tokio_io, AsyncBufReadExt, AsyncWriteExt};
+use tokio::time::{timeout, Duration};
 use uuid::Uuid;
 
 #[derive(Parser, Debug)]
@@ -72,7 +73,9 @@ async fn main() {
         return;
     }
 
-    let workspace = cli.workspace.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+    let workspace = cli
+        .workspace
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
     let line_limit = cli.line_limit.unwrap_or(1024 * 1024);
 
     let provider = build_provider(&cli.provider).await;
@@ -138,7 +141,7 @@ async fn main() {
                 let _ = writeln!(io::stdout(), "missing --prompt in print mode");
             }
         }
-        Mode::Interactive => run_interactive(agent).await,
+        Mode::Interactive => run_interactive(agent, search_service).await,
     }
 }
 
@@ -159,11 +162,10 @@ async fn run_protocol_schema(out: PathBuf) {
 
     #[cfg(not(feature = "protocol-schema"))]
     {
-        let _ = tokio_io::write_all(
-            &mut tokio_io::stdout(),
-            b"{\"error\":\"protocol-schema feature is disabled\"}",
-        )
-        .await;
+        let mut stdout = tokio_io::stdout();
+        let _ = stdout
+            .write_all(b"{\"error\":\"protocol-schema feature is disabled\"}")
+            .await;
     }
 }
 
@@ -175,7 +177,7 @@ async fn print_events_to_stdout(events: &[ServerEvent]) {
     }
 }
 
-async fn run_interactive(agent: Agent) {
+async fn run_interactive(agent: Agent, search_service: std::sync::Arc<SearchService>) {
     let mut out = io::stdout();
     let mut lines = tokio_io::BufReader::new(tokio_io::stdin()).lines();
     loop {
@@ -195,14 +197,17 @@ async fn run_interactive(agent: Agent) {
             continue;
         }
 
-        let request = match parse_client_request(&serde_json::json!({
-            "v": protocol_version(),
-            "type": "prompt",
-            "id": Uuid::new_v4().to_string(),
-            "message": line,
-        })
-        .to_string())
-        {
+        let expanded_line = complete_path_references(&line, &search_service).await;
+
+        let request = match parse_client_request(
+            &serde_json::json!({
+                "v": protocol_version(),
+                "type": "prompt",
+                "id": Uuid::new_v4().to_string(),
+                "message": expanded_line,
+            })
+            .to_string(),
+        ) {
             Ok(value) => value,
             Err(err) => {
                 let _ = out.write_all(format!("parse error: {err}\n").as_bytes());
@@ -213,7 +218,10 @@ async fn run_interactive(agent: Agent) {
         match agent.handle_request(request).await {
             Ok(events) => {
                 for event in events {
-                    if let ServerEvent::MessageUpdate { delta, done: false, .. } = event {
+                    if let ServerEvent::MessageUpdate {
+                        delta, done: false, ..
+                    } = event
+                    {
                         let _ = out.write_all(delta.as_bytes());
                     } else if let ServerEvent::MessageUpdate { done: true, .. } = event {
                         let _ = out.write_all(b"\n");
@@ -228,6 +236,44 @@ async fn run_interactive(agent: Agent) {
         }
 
         let _ = out.flush();
+    }
+}
+
+async fn complete_path_references(
+    line: &str,
+    search_service: &std::sync::Arc<SearchService>,
+) -> String {
+    let mut completed = Vec::new();
+    for token in line.split_whitespace() {
+        if let Some(prefix) = token.strip_prefix('@') {
+            let normalized =
+                prefix.trim_matches(|ch| matches!(ch, ',' | ';' | ':' | ')' | '(' | '"'));
+            if normalized.len() >= 2 {
+                let query = SearchQuery {
+                    text: normalized.to_string(),
+                    scope: Some(".".to_string()),
+                    filters: Vec::new(),
+                    limit: 1,
+                    token: None,
+                    offset: 0,
+                };
+                if let Ok(Ok(response)) =
+                    timeout(Duration::from_millis(75), search_service.find_files(&query)).await
+                {
+                    if let Some(best) = response.items.first() {
+                        completed.push(format!("@{}", best.relative_path));
+                        continue;
+                    }
+                }
+            }
+        }
+        completed.push(token.to_string());
+    }
+
+    if completed.is_empty() {
+        line.to_string()
+    } else {
+        completed.join(" ")
     }
 }
 

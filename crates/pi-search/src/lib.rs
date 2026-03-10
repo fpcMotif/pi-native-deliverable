@@ -147,7 +147,7 @@ struct IndexedFile {
 pub struct SearchService {
     config: SearchServiceConfig,
     index: RwLock<Vec<IndexedFile>>,
-    git_index: RwLock<HashMap<PathBuf, String>>,
+    git_index: RwLock<HashMap<String, String>>,
 }
 
 impl SearchService {
@@ -175,56 +175,64 @@ impl SearchService {
         let root = self.config.workspace_root.clone();
 
         let mut walker = WalkBuilder::new(&root);
-        walker.hidden(false).git_ignore(true).parents(true).build().for_each(|result| {
-            let entry = match result {
-                Ok(value) => value,
-                Err(_) => return,
-            };
-            let path = entry.path();
-            if !path.is_file() {
-                return;
-            }
+        walker
+            .hidden(false)
+            .git_ignore(true)
+            .parents(true)
+            .build()
+            .for_each(|result| {
+                let entry = match result {
+                    Ok(value) => value,
+                    Err(_) => return,
+                };
+                let path = entry.path();
+                if !path.is_file() {
+                    return;
+                }
 
-            let metadata = match path.metadata() {
-                Ok(value) => value,
-                Err(_) => return,
-            };
-            if metadata.len() > self.config.max_file_size {
-                return;
-            }
+                let metadata = match path.metadata() {
+                    Ok(value) => value,
+                    Err(_) => return,
+                };
+                if metadata.len() > self.config.max_file_size {
+                    return;
+                }
 
-            let relative = path
-                .strip_prefix(&root)
-                .unwrap_or(path)
-                .to_string_lossy()
-                .to_string();
-            if should_ignore_path(&relative) {
-                return;
-            }
+                let relative = path
+                    .strip_prefix(&root)
+                    .unwrap_or(path)
+                    .to_string_lossy()
+                    .to_string();
+                if should_ignore_path(&relative) {
+                    return;
+                }
 
-            let modified_ms = metadata
-                .modified()
-                .unwrap_or_else(|_| SystemTime::now())
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
+                let modified_ms = metadata
+                    .modified()
+                    .unwrap_or_else(|_| SystemTime::now())
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
 
-            let frecency = self
-                .git_index
-                .try_read()
-                .ok()
-                .map(|map| map.get(path).map(|status| status_to_frecency(status)).unwrap_or(0))
-                .unwrap_or(0);
+                let (git_status, frecency) = self
+                    .git_index
+                    .try_read()
+                    .ok()
+                    .and_then(|map| {
+                        map.get(&relative)
+                            .map(|status| (Some(status.clone()), status_to_frecency(status)))
+                    })
+                    .unwrap_or((None, 0));
 
-            items.push(IndexedFile {
-                relative_path: relative,
-                absolute_path: path.to_path_buf(),
-                size_bytes: metadata.len(),
-                mtime_ms: modified_ms,
-                frecency,
-                git_status: None,
+                items.push(IndexedFile {
+                    relative_path: relative,
+                    absolute_path: path.to_path_buf(),
+                    size_bytes: metadata.len(),
+                    mtime_ms: modified_ms,
+                    frecency,
+                    git_status,
+                });
             });
-        });
 
         items.sort_by(|left, right| {
             left.relative_path
@@ -341,7 +349,11 @@ impl SearchService {
             None
         };
 
-        Ok(SearchResponse { items, token, stats })
+        Ok(SearchResponse {
+            items,
+            token,
+            stats,
+        })
     }
 
     pub async fn grep(
@@ -395,9 +407,7 @@ impl SearchService {
                         let regex = regex.as_ref().expect("regex");
                         regex.is_match(line)
                     }
-                    GrepMode::Fuzzy => {
-                        normalized_levenshtein(&line.to_lowercase(), &lower) >= 0.72
-                    }
+                    GrepMode::Fuzzy => normalized_levenshtein(&line.to_lowercase(), &lower) >= 0.72,
                 };
 
                 if !matched {
@@ -416,7 +426,8 @@ impl SearchService {
                     .take(2)
                     .map(|line| (*line).to_string())
                     .collect::<Vec<_>>();
-                let byte_offset: usize = lines.iter().take(line_idx).map(|line| line.len() + 1).sum();
+                let byte_offset: usize =
+                    lines.iter().take(line_idx).map(|line| line.len() + 1).sum();
 
                 matches.push(GrepMatch {
                     path: entry.relative_path.clone(),
@@ -470,11 +481,18 @@ impl SearchService {
             if line.len() < 4 {
                 continue;
             }
-            let code = &line[..2];
-            let path = line[3..].trim();
-            let absolute = self.config.workspace_root.join(path);
-            status_map.insert(absolute, code.to_string());
+            let code = line[..2].replace(" ", "");
+            let raw_path = line[3..].trim();
+            let relative = raw_path
+                .split(" -> ")
+                .last()
+                .unwrap_or(raw_path)
+                .replace('\\', "/");
+            status_map.insert(relative, code);
         }
+
+        drop(status_map);
+        self.rebuild_index().await?;
 
         Ok(())
     }
@@ -571,7 +589,7 @@ fn score_entrypoint_bonus(path: &str) -> f64 {
 fn score_git_bonus(status: Option<&str>) -> f64 {
     match status {
         Some("M") | Some("MM") | Some("??") => 0.12,
-        Some("A") | Some("AM") | Some(" D") => 0.08,
+        Some("A") | Some("AM") | Some("D") => 0.08,
         _ => 0.0,
     }
 }
@@ -585,6 +603,7 @@ fn status_to_frecency(status: &str) -> u32 {
         "M" | "MM" => 10,
         "A" | "AM" => 8,
         "??" => 6,
+        "D" => 4,
         _ => 2,
     }
 }
@@ -598,12 +617,16 @@ pub fn decode_token(token: &str) -> SearchResult<usize> {
         .decode(token)
         .map_err(|err| SearchError::InvalidToken(err.to_string()))?;
     if bytes.len() != 8 {
-        return Err(SearchError::InvalidToken("token payload size mismatch".to_string()));
+        return Err(SearchError::InvalidToken(
+            "token payload size mismatch".to_string(),
+        ));
     }
     let value = u64::from_be_bytes(
         bytes
             .try_into()
             .map_err(|_| SearchError::InvalidToken("invalid token payload".to_string()))?,
     );
-    Ok(value.try_into().map_err(|_| SearchError::InvalidToken("token overflow".to_string()))?)
+    Ok(value
+        .try_into()
+        .map_err(|_| SearchError::InvalidToken("token overflow".to_string()))?)
 }
