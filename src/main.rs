@@ -4,17 +4,27 @@ use clap::{Parser, Subcommand, ValueEnum};
 use pi_core::{run_rpc, Agent, AgentConfig};
 use pi_llm::{MockProvider, Provider};
 use pi_protocol::{parse_client_request, protocol_version, to_json_line, ServerEvent};
+use pi_search::{SearchService, SearchServiceConfig};
 use pi_session::SessionStore;
 use pi_tools::{default_registry, Policy};
-use pi_search::{SearchService, SearchServiceConfig};
 use std::io::{self, Write};
 use std::path::PathBuf;
-use tokio::io::{self as tokio_io, AsyncBufReadExt};
+use tokio::io::{self as tokio_io, AsyncBufReadExt, AsyncWriteExt};
 use uuid::Uuid;
+
+/// CLI usage error, including missing required arguments in print mode.
+const EXIT_INVALID_USAGE: i32 = 64;
+/// Protocol request parse failure.
+const EXIT_PROTOCOL_PARSE: i32 = 65;
+/// Runtime/configuration failure.
+const EXIT_RUNTIME_FAILURE: i32 = 70;
 
 #[derive(Parser, Debug)]
 #[command(name = "pi", about = "pi agent runtime")]
 struct Cli {
+    #[arg(short = 'p', long = "print", action = clap::ArgAction::SetTrue, conflicts_with = "mode")]
+    print_mode: bool,
+
     #[arg(long)]
     mode: Option<Mode>,
 
@@ -26,6 +36,12 @@ struct Cli {
 
     #[arg(long)]
     prompt: Option<String>,
+
+    #[arg(long, hide = true)]
+    request_id: Option<String>,
+
+    #[arg(long, hide = true)]
+    request_version: Option<String>,
 
     #[arg(long)]
     workspace: Option<PathBuf>,
@@ -62,6 +78,13 @@ enum Mode {
 
 #[tokio::main]
 async fn main() {
+    let exit_code = run().await;
+    if exit_code != 0 {
+        std::process::exit(exit_code);
+    }
+}
+
+async fn run() -> i32 {
     let cli = Cli::parse();
 
     if let Some(Command::Protocol {
@@ -69,26 +92,59 @@ async fn main() {
     }) = cli.command
     {
         run_protocol_schema(out).await;
-        return;
+        return 0;
     }
 
-    let workspace = cli.workspace.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+    let mode = if cli.print_mode {
+        Mode::Print
+    } else {
+        cli.mode.unwrap_or(Mode::Interactive)
+    };
+
+    let workspace = cli
+        .workspace
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
     let line_limit = cli.line_limit.unwrap_or(1024 * 1024);
 
     let provider = build_provider(&cli.provider).await;
 
-    let session_path = SessionStore::resolve_session_path(".pi/session.jsonl", workspace.clone())
-        .unwrap_or_else(|err| panic!("failed to resolve session path: {err}"));
-    let session_store = SessionStore::new(session_path)
-        .await
-        .unwrap_or_else(|err| panic!("failed to open session store: {err}"));
+    let session_path =
+        match SessionStore::resolve_session_path(".pi/session.jsonl", workspace.clone()) {
+            Ok(path) => path,
+            Err(err) => {
+                let _ = writeln!(
+                    io::stderr(),
+                    "runtime config error: failed to resolve session path: {err}"
+                );
+                return EXIT_RUNTIME_FAILURE;
+            }
+        };
+    let session_store = match SessionStore::new(session_path).await {
+        Ok(store) => store,
+        Err(err) => {
+            let _ = writeln!(
+                io::stderr(),
+                "runtime config error: failed to open session store: {err}"
+            );
+            return EXIT_RUNTIME_FAILURE;
+        }
+    };
 
-    let search_service = SearchService::new(SearchServiceConfig {
+    let search_service = match SearchService::new(SearchServiceConfig {
         workspace_root: workspace.clone(),
         ..Default::default()
     })
     .await
-    .unwrap_or_else(|err| panic!("failed to create search service: {err}"));
+    {
+        Ok(service) => service,
+        Err(err) => {
+            let _ = writeln!(
+                io::stderr(),
+                "runtime config error: failed to create search service: {err}"
+            );
+            return EXIT_RUNTIME_FAILURE;
+        }
+    };
 
     let policy = Policy::safe_defaults(workspace.clone());
     let registry = default_registry(search_service.clone());
@@ -105,18 +161,23 @@ async fn main() {
 
     let agent = Agent::new(config).await;
 
-    match cli.mode.unwrap_or(Mode::Interactive) {
+    match mode {
         Mode::Rpc => {
-            let _ = run_rpc(&agent).await;
+            if let Err(err) = run_rpc(&agent).await {
+                let _ = writeln!(io::stderr(), "runtime error: {err}");
+                return EXIT_RUNTIME_FAILURE;
+            }
         }
         Mode::Print => {
             if let Some(prompt) = cli.prompt.as_deref() {
+                let request_id = cli.request_id.unwrap_or_else(|| Uuid::new_v4().to_string());
+                let request_version = cli.request_version.unwrap_or_else(protocol_version);
                 let request_json = format!(
                     "{}",
                     serde_json::json!({
-                        "v": protocol_version(),
+                        "v": request_version,
                         "type": "prompt",
-                        "id": Uuid::new_v4().to_string(),
+                        "id": request_id,
                         "message": prompt,
                     })
                 );
@@ -127,19 +188,27 @@ async fn main() {
                             print_events_to_stdout(&events).await;
                         }
                         Err(err) => {
-                            let _ = writeln!(io::stdout(), "error: {err}");
+                            let _ = writeln!(io::stderr(), "agent runtime error: {err}");
+                            return EXIT_RUNTIME_FAILURE;
                         }
                     },
                     Err(err) => {
-                        let _ = writeln!(io::stdout(), "request parse error: {err}");
+                        let _ = writeln!(io::stderr(), "request parse error: {err}");
+                        return EXIT_PROTOCOL_PARSE;
                     }
                 }
             } else {
-                let _ = writeln!(io::stdout(), "missing --prompt in print mode");
+                let _ = writeln!(
+                    io::stderr(),
+                    "invalid usage: missing --prompt in print mode"
+                );
+                return EXIT_INVALID_USAGE;
             }
         }
         Mode::Interactive => run_interactive(agent).await,
     }
+
+    0
 }
 
 async fn run_protocol_schema(out: PathBuf) {
@@ -159,20 +228,27 @@ async fn run_protocol_schema(out: PathBuf) {
 
     #[cfg(not(feature = "protocol-schema"))]
     {
-        let _ = tokio_io::write_all(
-            &mut tokio_io::stdout(),
-            b"{\"error\":\"protocol-schema feature is disabled\"}",
-        )
-        .await;
+        let mut out = tokio_io::stdout();
+        let _ = out
+            .write_all(b"{\"error\":\"protocol-schema feature is disabled\"}")
+            .await;
     }
 }
 
 async fn print_events_to_stdout(events: &[ServerEvent]) {
+    let mut out = io::stdout();
     for event in events {
-        if let Ok(line) = to_json_line(event) {
-            let _ = io::stdout().write_all(line.as_bytes());
+        if let ServerEvent::MessageUpdate {
+            delta, done: false, ..
+        } = event
+        {
+            let _ = out.write_all(delta.as_bytes());
+        }
+        if let ServerEvent::MessageUpdate { done: true, .. } = event {
+            let _ = out.write_all(b"\n");
         }
     }
+    let _ = out.flush();
 }
 
 async fn run_interactive(agent: Agent) {
@@ -195,14 +271,15 @@ async fn run_interactive(agent: Agent) {
             continue;
         }
 
-        let request = match parse_client_request(&serde_json::json!({
-            "v": protocol_version(),
-            "type": "prompt",
-            "id": Uuid::new_v4().to_string(),
-            "message": line,
-        })
-        .to_string())
-        {
+        let request = match parse_client_request(
+            &serde_json::json!({
+                "v": protocol_version(),
+                "type": "prompt",
+                "id": Uuid::new_v4().to_string(),
+                "message": line,
+            })
+            .to_string(),
+        ) {
             Ok(value) => value,
             Err(err) => {
                 let _ = out.write_all(format!("parse error: {err}\n").as_bytes());
@@ -213,7 +290,10 @@ async fn run_interactive(agent: Agent) {
         match agent.handle_request(request).await {
             Ok(events) => {
                 for event in events {
-                    if let ServerEvent::MessageUpdate { delta, done: false, .. } = event {
+                    if let ServerEvent::MessageUpdate {
+                        delta, done: false, ..
+                    } = event
+                    {
                         let _ = out.write_all(delta.as_bytes());
                     } else if let ServerEvent::MessageUpdate { done: true, .. } = event {
                         let _ = out.write_all(b"\n");
