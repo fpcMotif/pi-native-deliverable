@@ -3,10 +3,11 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use pi_core::{run_rpc, Agent, AgentConfig};
 use pi_llm::{MockProvider, Provider};
+use pi_protocol::rpc::ClientRequest;
 use pi_protocol::{parse_client_request, protocol_version, to_json_line, ServerEvent};
+use pi_search::{SearchService, SearchServiceConfig};
 use pi_session::SessionStore;
 use pi_tools::{default_registry, Policy};
-use pi_search::{SearchService, SearchServiceConfig};
 use std::io::{self, Write};
 use std::path::PathBuf;
 use tokio::io::{self as tokio_io, AsyncBufReadExt};
@@ -32,6 +33,19 @@ struct Cli {
 
     #[arg(long)]
     line_limit: Option<usize>,
+
+    #[arg(long, help = "Continue from the current session head")]
+    continue_last: bool,
+
+    #[arg(long, value_name = "PATH", help = "Open a specific session file path")]
+    open_by_path: Option<PathBuf>,
+
+    #[arg(
+        long,
+        value_name = "TURN_ID",
+        help = "Fork session from an existing turn id"
+    )]
+    branch_from_turn: Option<String>,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -72,13 +86,21 @@ async fn main() {
         return;
     }
 
-    let workspace = cli.workspace.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+    let workspace = cli
+        .workspace
+        .clone()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
     let line_limit = cli.line_limit.unwrap_or(1024 * 1024);
 
     let provider = build_provider(&cli.provider).await;
 
-    let session_path = SessionStore::resolve_session_path(".pi/session.jsonl", workspace.clone())
-        .unwrap_or_else(|err| panic!("failed to resolve session path: {err}"));
+    let requested_session_path = cli
+        .open_by_path
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(".pi/session.jsonl"));
+    let session_path =
+        SessionStore::resolve_session_path(requested_session_path, workspace.clone())
+            .unwrap_or_else(|err| panic!("failed to resolve session path: {err}"));
     let session_store = SessionStore::new(session_path)
         .await
         .unwrap_or_else(|err| panic!("failed to open session store: {err}"));
@@ -99,11 +121,12 @@ async fn main() {
         session_store: std::sync::Arc::new(tokio::sync::Mutex::new(session_store)),
         tool_policy: policy,
         workspace_root: workspace.clone(),
-        default_provider_model: cli.model,
+        default_provider_model: cli.model.clone(),
         line_limit,
     };
 
     let agent = Agent::new(config).await;
+    apply_startup_session_controls(&agent, &cli).await;
 
     match cli.mode.unwrap_or(Mode::Interactive) {
         Mode::Rpc => {
@@ -142,28 +165,60 @@ async fn main() {
     }
 }
 
-async fn run_protocol_schema(out: PathBuf) {
+async fn apply_startup_session_controls(agent: &Agent, cli: &Cli) {
+    if let Some(path) = &cli.open_by_path {
+        let _ = agent
+            .handle_request(ClientRequest::SelectSessionPath {
+                v: protocol_version(),
+                id: Some(Uuid::new_v4().to_string()),
+                path: path.display().to_string(),
+            })
+            .await;
+    }
+
+    if let Some(turn_id) = &cli.branch_from_turn {
+        let _ = agent
+            .handle_request(ClientRequest::ForkSession {
+                v: protocol_version(),
+                id: Some(Uuid::new_v4().to_string()),
+                from_turn_id: turn_id.clone(),
+            })
+            .await;
+    }
+
+    if cli.continue_last {
+        let _ = agent
+            .handle_request(ClientRequest::CheckoutBranchHead {
+                v: protocol_version(),
+                id: Some(Uuid::new_v4().to_string()),
+                from_turn_id: None,
+            })
+            .await;
+    }
+}
+
+async fn run_protocol_schema(_out: PathBuf) {
     #[cfg(feature = "protocol-schema")]
     {
-        if let Some(parent) = out.parent() {
+        if let Some(parent) = _out.parent() {
             let _ = tokio::fs::create_dir_all(parent).await;
         }
         let schema = pi_protocol::schema_json();
         let text = serde_json::to_string_pretty(&schema).expect("schema");
-        if let Err(err) = tokio::fs::write(&out, text).await {
+        if let Err(err) = tokio::fs::write(&_out, text).await {
             let _ = writeln!(io::stderr(), "failed writing schema: {err}");
             return;
         }
-        let _ = writeln!(io::stdout(), "wrote protocol schema to {}", out.display());
+        let _ = writeln!(io::stdout(), "wrote protocol schema to {}", _out.display());
     }
 
     #[cfg(not(feature = "protocol-schema"))]
     {
-        let _ = tokio_io::write_all(
-            &mut tokio_io::stdout(),
-            b"{\"error\":\"protocol-schema feature is disabled\"}",
-        )
-        .await;
+        let _ = writeln!(
+            io::stdout(),
+            "{}",
+            "{\"error\":\"protocol-schema feature is disabled\"}"
+        );
     }
 }
 
@@ -195,14 +250,19 @@ async fn run_interactive(agent: Agent) {
             continue;
         }
 
-        let request = match parse_client_request(&serde_json::json!({
-            "v": protocol_version(),
-            "type": "prompt",
-            "id": Uuid::new_v4().to_string(),
-            "message": line,
-        })
-        .to_string())
-        {
+        if handle_interactive_session_command(&agent, &line, &mut out).await {
+            continue;
+        }
+
+        let request = match parse_client_request(
+            &serde_json::json!({
+                "v": protocol_version(),
+                "type": "prompt",
+                "id": Uuid::new_v4().to_string(),
+                "message": line,
+            })
+            .to_string(),
+        ) {
             Ok(value) => value,
             Err(err) => {
                 let _ = out.write_all(format!("parse error: {err}\n").as_bytes());
@@ -213,7 +273,10 @@ async fn run_interactive(agent: Agent) {
         match agent.handle_request(request).await {
             Ok(events) => {
                 for event in events {
-                    if let ServerEvent::MessageUpdate { delta, done: false, .. } = event {
+                    if let ServerEvent::MessageUpdate {
+                        delta, done: false, ..
+                    } = event
+                    {
                         let _ = out.write_all(delta.as_bytes());
                     } else if let ServerEvent::MessageUpdate { done: true, .. } = event {
                         let _ = out.write_all(b"\n");
@@ -228,6 +291,54 @@ async fn run_interactive(agent: Agent) {
         }
 
         let _ = out.flush();
+    }
+}
+
+async fn handle_interactive_session_command(
+    agent: &Agent,
+    line: &str,
+    out: &mut std::io::Stdout,
+) -> bool {
+    let trimmed = line.trim();
+    let request = if trimmed == "/continue-last" {
+        Some(ClientRequest::CheckoutBranchHead {
+            v: protocol_version(),
+            id: Some(Uuid::new_v4().to_string()),
+            from_turn_id: None,
+        })
+    } else if let Some(path) = trimmed.strip_prefix("/open-by-path ") {
+        Some(ClientRequest::SelectSessionPath {
+            v: protocol_version(),
+            id: Some(Uuid::new_v4().to_string()),
+            path: path.trim().to_string(),
+        })
+    } else if let Some(turn_id) = trimmed.strip_prefix("/branch-from-turn ") {
+        Some(ClientRequest::ForkSession {
+            v: protocol_version(),
+            id: Some(Uuid::new_v4().to_string()),
+            from_turn_id: turn_id.trim().to_string(),
+        })
+    } else {
+        None
+    };
+
+    if let Some(request) = request {
+        match agent.handle_request(request).await {
+            Ok(events) => {
+                for event in events {
+                    if let Ok(line) = to_json_line(&event) {
+                        let _ = out.write_all(line.as_bytes());
+                    }
+                }
+                let _ = out.flush();
+            }
+            Err(err) => {
+                let _ = out.write_all(format!("agent error: {err}\n").as_bytes());
+            }
+        }
+        true
+    } else {
+        false
     }
 }
 

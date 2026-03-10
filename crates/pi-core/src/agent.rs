@@ -2,10 +2,8 @@
 
 use futures::StreamExt;
 use pi_llm::{CompletionMessage, CompletionRequest, Provider, ProviderEvent};
-use pi_protocol::{
-    make_error_event, protocol_version, ProtocolErrorPayload, ServerEvent,
-};
 use pi_protocol::rpc::ClientRequest;
+use pi_protocol::{make_error_event, protocol_version, ProtocolErrorPayload, ServerEvent};
 use pi_session::SessionStore;
 use pi_tools::{ToolCall, ToolCallResult, ToolRegistry};
 use serde_json::json;
@@ -99,7 +97,9 @@ impl Agent {
         tokio::spawn(async move {
             while let Some(command) = receiver.recv().await {
                 match command {
-                    Command::Prompt(request) | Command::Steer(request) | Command::FollowUp(request) => {
+                    Command::Prompt(request)
+                    | Command::Steer(request)
+                    | Command::FollowUp(request) => {
                         let _ = runner.handle_request(request).await;
                     }
                     Command::Abort => {
@@ -134,9 +134,9 @@ impl Agent {
     pub async fn handle_request(&self, request: ClientRequest) -> Result<Vec<ServerEvent>> {
         let request_id = request.request_id().map(str::to_string);
         let response = match request {
-            ClientRequest::Prompt { .. } | ClientRequest::Steer { .. } | ClientRequest::FollowUp { .. } => {
-                self.handle_turn(request).await
-            }
+            ClientRequest::Prompt { .. }
+            | ClientRequest::Steer { .. }
+            | ClientRequest::FollowUp { .. } => self.handle_turn(request).await,
             ClientRequest::Abort { .. } => {
                 self.request_abort().await;
                 Ok(vec![ServerEvent::State {
@@ -162,10 +162,16 @@ impl Agent {
                 }])
             }
             ClientRequest::NewSession { .. } => Ok(self.new_session().await?),
-            ClientRequest::Unknown {
-                request_type,
-                ..
-            } => Ok(vec![make_error_event(
+            ClientRequest::SelectSessionPath { path, .. } => {
+                Ok(self.select_session_path(path).await?)
+            }
+            ClientRequest::ForkSession { from_turn_id, .. } => {
+                Ok(self.fork_session(from_turn_id).await?)
+            }
+            ClientRequest::CheckoutBranchHead { from_turn_id, .. } => {
+                Ok(self.checkout_branch_head(from_turn_id).await?)
+            }
+            ClientRequest::Unknown { request_type, .. } => Ok(vec![make_error_event(
                 "unsupported_message_type",
                 format!("unsupported request type: {request_type}"),
                 request_id,
@@ -198,6 +204,83 @@ impl Agent {
             .await
             .map(|_| ())
             .map_err(|err| AgentError::Session(err.to_string()))
+    }
+
+    async fn select_session_path(&self, path: String) -> Result<Vec<ServerEvent>> {
+        let resolved = SessionStore::resolve_session_path(&path, &self.config.workspace_root)
+            .map_err(|err| AgentError::Session(err.to_string()))?;
+        let mut new_store = SessionStore::new(resolved.clone())
+            .await
+            .map_err(|err| AgentError::Session(err.to_string()))?;
+        new_store
+            .append(pi_protocol::session::SessionEntryKind::SessionMetadata {
+                payload: json!({"action":"select_session_path", "path": resolved}),
+            })
+            .await
+            .map_err(|err| AgentError::Session(err.to_string()))?;
+        {
+            let mut store = self.config.session_store.lock().await;
+            *store = new_store;
+        }
+
+        Ok(vec![ServerEvent::State {
+            v: protocol_version(),
+            id: Some(Uuid::new_v4().to_string()),
+            request_id: None,
+            payload: json!({"state": "session_path_selected", "path": path}),
+        }])
+    }
+
+    async fn fork_session(&self, from_turn_id: String) -> Result<Vec<ServerEvent>> {
+        let from_entry_id = Uuid::parse_str(&from_turn_id)
+            .map_err(|err| AgentError::State(format!("invalid turn id: {err}")))?;
+        let mut store = self.config.session_store.lock().await;
+        let head = store
+            .branch_from(from_entry_id)
+            .await
+            .map_err(|err| AgentError::Session(err.to_string()))?;
+        let _ = store.checkout(head).await;
+
+        Ok(vec![ServerEvent::State {
+            v: protocol_version(),
+            id: Some(Uuid::new_v4().to_string()),
+            request_id: None,
+            payload: json!({"state": "session_forked", "from_turn_id": from_turn_id, "head": head}),
+        }])
+    }
+
+    async fn checkout_branch_head(&self, from_turn_id: Option<String>) -> Result<Vec<ServerEvent>> {
+        let mut store = self.config.session_store.lock().await;
+        let branch_anchor = from_turn_id.clone();
+        let target = if let Some(anchor_id) = branch_anchor.as_deref() {
+            let root = Uuid::parse_str(anchor_id)
+                .map_err(|err| AgentError::State(format!("invalid turn id: {err}")))?;
+            resolve_branch_head(&store.log.entries, store.load_tree().1, root)
+                .ok_or_else(|| AgentError::Session(format!("entry {anchor_id} not found")))?
+        } else {
+            store
+                .current_head()
+                .await
+                .ok_or_else(|| AgentError::Session("cannot continue empty session".to_string()))?
+        };
+
+        if !store.checkout(target).await {
+            return Err(AgentError::Session(format!("entry {target} not found")));
+        }
+
+        store
+            .append(pi_protocol::session::SessionEntryKind::SessionMetadata {
+                payload: json!({"action":"checkout_branch_head", "from_turn_id": branch_anchor, "head": target}),
+            })
+            .await
+            .map_err(|err| AgentError::Session(err.to_string()))?;
+
+        Ok(vec![ServerEvent::State {
+            v: protocol_version(),
+            id: Some(Uuid::new_v4().to_string()),
+            request_id: None,
+            payload: json!({"state": "branch_head_checked_out", "head": target}),
+        }])
     }
 
     async fn request_abort(&self) {
@@ -242,7 +325,13 @@ impl Agent {
                 role: "user".to_string(),
                 content: message,
             }],
-            tools: self.config.tool_registry.list().iter().map(|tool| tool.name.clone()).collect(),
+            tools: self
+                .config
+                .tool_registry
+                .list()
+                .iter()
+                .map(|tool| tool.name.clone())
+                .collect(),
             stream: true,
             temperature: 0.2,
             metadata: Default::default(),
@@ -256,7 +345,10 @@ impl Agent {
 
         while let Some(event) = stream.next().await {
             match event {
-                ProviderEvent::TextDelta { text, request_id: _ } => {
+                ProviderEvent::TextDelta {
+                    text,
+                    request_id: _,
+                } => {
                     aggregate.push_str(&text);
                     events.push(ServerEvent::MessageUpdate {
                         v: protocol_version(),
@@ -266,7 +358,10 @@ impl Agent {
                         done: false,
                     });
                 }
-                ProviderEvent::ThinkingDelta { text, request_id: _ } => {
+                ProviderEvent::ThinkingDelta {
+                    text,
+                    request_id: _,
+                } => {
                     aggregate.push_str(&text);
                     events.push(ServerEvent::MessageUpdate {
                         v: protocol_version(),
@@ -313,7 +408,11 @@ impl Agent {
                                 request_id: request_id.clone(),
                                 tool_name: "unknown".to_string(),
                                 call_id,
-                                error: ProtocolErrorPayload::new("tool_call_error", err.to_string(), None),
+                                error: ProtocolErrorPayload::new(
+                                    "tool_call_error",
+                                    err.to_string(),
+                                    None,
+                                ),
                             });
                         }
                     }
@@ -324,7 +423,11 @@ impl Agent {
                 }
                 ProviderEvent::Usage { .. } => {}
                 ProviderEvent::Error { message, .. } => {
-                    events.push(make_error_event("provider_error", message, request_id.clone()));
+                    events.push(make_error_event(
+                        "provider_error",
+                        message,
+                        request_id.clone(),
+                    ));
                     break;
                 }
             }
@@ -390,11 +493,16 @@ impl Agent {
         let result = self
             .config
             .tool_registry
-            .execute(&name, &call, &self.config.tool_policy, &self.config.workspace_root)
+            .execute(
+                &name,
+                &call,
+                &self.config.tool_policy,
+                &self.config.workspace_root,
+            )
             .map_err(|err| AgentError::Tool(err.to_string()))?;
 
-        let output_json = serde_json::to_value(&result)
-            .map_err(|err| AgentError::Tool(err.to_string()))?;
+        let output_json =
+            serde_json::to_value(&result).map_err(|err| AgentError::Tool(err.to_string()))?;
 
         {
             let mut store = self.config.session_store.lock().await;
@@ -414,6 +522,33 @@ impl Agent {
             result,
         })
     }
+}
+
+fn resolve_branch_head(
+    entries: &[pi_protocol::session::SessionEntry],
+    children: &std::collections::HashMap<Uuid, Vec<Uuid>>,
+    root: Uuid,
+) -> Option<Uuid> {
+    if !entries.iter().any(|entry| entry.entry_id == root) {
+        return None;
+    }
+
+    let mut stack = vec![root];
+    let mut reachable = std::collections::HashSet::new();
+    while let Some(node) = stack.pop() {
+        if !reachable.insert(node) {
+            continue;
+        }
+        if let Some(next) = children.get(&node) {
+            stack.extend(next.iter().copied());
+        }
+    }
+
+    entries
+        .iter()
+        .rev()
+        .find(|entry| reachable.contains(&entry.entry_id))
+        .map(|entry| entry.entry_id)
 }
 
 struct ToolCallResultOutput {
