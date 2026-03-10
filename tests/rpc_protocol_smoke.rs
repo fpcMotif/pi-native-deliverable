@@ -10,7 +10,14 @@ use std::process::{Command, Stdio};
 fn rpc_smoke_prompt_and_events() {
     // Spawn `pi --mode rpc`
     let mut child = Command::new(env!("CARGO_BIN_EXE_pi"))
-        .args(["--mode", "rpc", "--provider", "mock", "--model", "mock-tool-call"])
+        .args([
+            "--mode",
+            "rpc",
+            "--provider",
+            "mock",
+            "--model",
+            "mock-tool-call",
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -59,5 +66,54 @@ fn rpc_smoke_prompt_and_events() {
     let _ = child.wait();
 
     assert!(saw_ready, "expected a ready event");
-    assert!(saw_message_update, "expected at least one message_update event");
+    assert!(
+        saw_message_update,
+        "expected at least one message_update event"
+    );
+}
+
+#[test]
+fn rpc_reload_command_returns_state_event() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_pi"))
+        .args([
+            "--mode",
+            "rpc",
+            "--provider",
+            "mock",
+            "--model",
+            "mock-tool-call",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("spawn pi rpc");
+
+    let stdin = child.stdin.as_mut().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+
+    writeln!(stdin, r#"{{"v":"1.0.0","type":"reload","id":"reload-1"}}"#).expect("write reload");
+
+    let mut reader = BufReader::new(stdout);
+    let mut saw_reload_state = false;
+
+    for _ in 0..100 {
+        let mut line = String::new();
+        if reader.read_line(&mut line).unwrap_or(0) == 0 {
+            break;
+        }
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.contains(r#""type":"state""#) && line.contains("extensions_reloaded") {
+            saw_reload_state = true;
+            break;
+        }
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    assert!(saw_reload_state, "expected extension reload state event");
 }

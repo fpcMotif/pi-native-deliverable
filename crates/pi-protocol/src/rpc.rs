@@ -108,6 +108,10 @@ pub enum ClientRequest {
         v: String,
         id: Option<String>,
     },
+    Reload {
+        v: String,
+        id: Option<String>,
+    },
     Unknown {
         v: String,
         id: Option<String>,
@@ -126,6 +130,7 @@ impl ClientRequest {
             | Self::GetState { id, .. }
             | Self::Compact { id, .. }
             | Self::NewSession { id, .. }
+            | Self::Reload { id, .. }
             | Self::Unknown { id, .. } => id.as_deref(),
         }
     }
@@ -139,6 +144,7 @@ impl ClientRequest {
             | Self::GetState { v, .. }
             | Self::Compact { v, .. }
             | Self::NewSession { v, .. }
+            | Self::Reload { v, .. }
             | Self::Unknown { v, .. } => v.as_str(),
         }
     }
@@ -177,7 +183,11 @@ pub struct ProtocolErrorPayload {
 }
 
 impl ProtocolErrorPayload {
-    pub fn new(code: impl Into<String>, message: impl Into<String>, details: Option<Value>) -> Self {
+    pub fn new(
+        code: impl Into<String>,
+        message: impl Into<String>,
+        details: Option<Value>,
+    ) -> Self {
         Self {
             code: code.into(),
             message: message.into(),
@@ -255,15 +265,33 @@ pub enum ServerEvent {
 impl ServerEvent {
     pub fn with_request_id(mut self, request_id: Option<String>) -> Self {
         match &mut self {
-            Self::Ready { request_id: rid, .. }
-            | Self::Error { request_id: rid, .. }
-            | Self::TurnStart { request_id: rid, .. }
-            | Self::TurnEnd { request_id: rid, .. }
-            | Self::MessageUpdate { request_id: rid, .. }
-            | Self::ToolCallStarted { request_id: rid, .. }
-            | Self::ToolCallResult { request_id: rid, .. }
-            | Self::ToolCallError { request_id: rid, .. }
-            | Self::State { request_id: rid, .. } => *rid = request_id,
+            Self::Ready {
+                request_id: rid, ..
+            }
+            | Self::Error {
+                request_id: rid, ..
+            }
+            | Self::TurnStart {
+                request_id: rid, ..
+            }
+            | Self::TurnEnd {
+                request_id: rid, ..
+            }
+            | Self::MessageUpdate {
+                request_id: rid, ..
+            }
+            | Self::ToolCallStarted {
+                request_id: rid, ..
+            }
+            | Self::ToolCallResult {
+                request_id: rid, ..
+            }
+            | Self::ToolCallError {
+                request_id: rid, ..
+            }
+            | Self::State {
+                request_id: rid, ..
+            } => *rid = request_id,
         }
         self
     }
@@ -313,7 +341,10 @@ impl std::error::Error for ToJsonLineError {}
 pub fn to_jsonl_value(event: &ServerEvent) -> String {
     let mut value = serde_json::to_value(event).expect("serialize event");
     if let Value::Object(map) = &mut value {
-        map.insert("type".to_string(), Value::String(server_event_type(event).to_string()));
+        map.insert(
+            "type".to_string(),
+            Value::String(server_event_type(event).to_string()),
+        );
         map.insert("v".to_string(), Value::String(PROTOCOL_VERSION.to_string()));
     }
     serde_json::to_string(&value).expect("serialize event to string")
@@ -322,7 +353,10 @@ pub fn to_jsonl_value(event: &ServerEvent) -> String {
 pub fn to_json_line(event: &ServerEvent) -> Result<String, ToJsonLineError> {
     let mut value = serde_json::to_value(event).map_err(ToJsonLineError::Serialize)?;
     if let Value::Object(map) = &mut value {
-        map.insert("type".to_string(), Value::String(server_event_type(event).to_string()));
+        map.insert(
+            "type".to_string(),
+            Value::String(server_event_type(event).to_string()),
+        );
         map.insert("v".to_string(), Value::String(PROTOCOL_VERSION.to_string()));
     }
     serde_json::to_string(&value)
@@ -339,6 +373,7 @@ enum RpcEnvelopeType {
     GetState,
     Compact,
     NewSession,
+    Reload,
     Unknown,
 }
 
@@ -387,7 +422,9 @@ struct CompactRequest {
 pub fn parse_client_request(raw: &str) -> Result<ClientRequest, ProtocolError> {
     let envelope = serde_json::from_str::<Value>(raw)?;
     let Value::Object(mut raw_map) = envelope else {
-        return Err(ProtocolError::InvalidPayload("request is not an object".to_string()));
+        return Err(ProtocolError::InvalidPayload(
+            "request is not an object".to_string(),
+        ));
     };
 
     let raw_request_type = raw_map
@@ -412,6 +449,7 @@ pub fn parse_client_request(raw: &str) -> Result<ClientRequest, ProtocolError> {
         "get_state" => RpcEnvelopeType::GetState,
         "compact" => RpcEnvelopeType::Compact,
         "new_session" => RpcEnvelopeType::NewSession,
+        "reload" => RpcEnvelopeType::Reload,
         _ => RpcEnvelopeType::Unknown,
     };
 
@@ -474,6 +512,14 @@ pub fn parse_client_request(raw: &str) -> Result<ClientRequest, ProtocolError> {
             let request: IdOnlyRequest = deserialize_request(Value::Object(raw_map.clone()))?;
             validate_version(&request.v)?;
             ClientRequest::NewSession {
+                v: request.v,
+                id: as_opt_string(request.id),
+            }
+        }
+        RpcEnvelopeType::Reload => {
+            let request: IdOnlyRequest = deserialize_request(Value::Object(raw_map.clone()))?;
+            validate_version(&request.v)?;
+            ClientRequest::Reload {
                 v: request.v,
                 id: as_opt_string(request.id),
             }
