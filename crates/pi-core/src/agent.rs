@@ -1,11 +1,9 @@
 #![forbid(unsafe_code)]
 
 use futures::StreamExt;
-use pi_llm::{CompletionMessage, CompletionRequest, Provider, ProviderEvent};
-use pi_protocol::{
-    make_error_event, protocol_version, ProtocolErrorPayload, ServerEvent,
-};
+use pi_llm::{model_registry, CompletionMessage, CompletionRequest, Provider, ProviderEvent};
 use pi_protocol::rpc::ClientRequest;
+use pi_protocol::{make_error_event, protocol_version, ProtocolErrorPayload, ServerEvent};
 use pi_session::SessionStore;
 use pi_tools::{ToolCall, ToolCallResult, ToolRegistry};
 use serde_json::json;
@@ -13,6 +11,85 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use uuid::Uuid;
+
+#[derive(Debug, Clone, Copy, Default)]
+struct UsageTotals {
+    input_tokens: u64,
+    output_tokens: u64,
+    cached_tokens: u64,
+    cost_usd: f64,
+}
+
+impl UsageTotals {
+    fn add_event(
+        &mut self,
+        input_tokens: u32,
+        output_tokens: u32,
+        cached_tokens: u32,
+        cost_usd: f64,
+    ) {
+        self.input_tokens += input_tokens as u64;
+        self.output_tokens += output_tokens as u64;
+        self.cached_tokens += cached_tokens as u64;
+        self.cost_usd += cost_usd;
+    }
+
+    fn with_added(self, rhs: UsageTotals) -> Self {
+        Self {
+            input_tokens: self.input_tokens + rhs.input_tokens,
+            output_tokens: self.output_tokens + rhs.output_tokens,
+            cached_tokens: self.cached_tokens + rhs.cached_tokens,
+            cost_usd: self.cost_usd + rhs.cost_usd,
+        }
+    }
+
+    fn to_json(self) -> serde_json::Value {
+        json!({
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "cached_tokens": self.cached_tokens,
+            "cost_usd": self.cost_usd,
+        })
+    }
+}
+
+fn usage_totals_from_log(store: &SessionStore) -> UsageTotals {
+    store
+        .log
+        .entries
+        .iter()
+        .rev()
+        .find_map(|entry| {
+            let pi_protocol::session::SessionEntryKind::SessionMetadata { payload } = &entry.kind
+            else {
+                return None;
+            };
+            if payload.get("type")?.as_str()? != "usage_totals" {
+                return None;
+            }
+
+            let session = payload.get("session")?;
+            Some(UsageTotals {
+                input_tokens: session
+                    .get("input_tokens")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0),
+                output_tokens: session
+                    .get("output_tokens")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0),
+                cached_tokens: session
+                    .get("cached_tokens")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0),
+                cost_usd: session
+                    .get("cost_usd")
+                    .and_then(serde_json::Value::as_f64)
+                    .unwrap_or(0.0),
+            })
+        })
+        .unwrap_or_default()
+}
 
 pub type Result<T> = std::result::Result<T, AgentError>;
 
@@ -99,7 +176,9 @@ impl Agent {
         tokio::spawn(async move {
             while let Some(command) = receiver.recv().await {
                 match command {
-                    Command::Prompt(request) | Command::Steer(request) | Command::FollowUp(request) => {
+                    Command::Prompt(request)
+                    | Command::Steer(request)
+                    | Command::FollowUp(request) => {
                         let _ = runner.handle_request(request).await;
                     }
                     Command::Abort => {
@@ -122,21 +201,29 @@ impl Agent {
     }
 
     async fn current_state_payload(&self) -> serde_json::Value {
-        let store = self.config.session_store.lock().await;
+        let (head, entries, roots) = {
+            let store = self.config.session_store.lock().await;
+            let head = store.current_head().await;
+            let entries = store.log.entries.len();
+            let roots = store.load_tree().0.len();
+            (head, entries, roots)
+        };
+        let registry = model_registry(self.config.provider.as_ref()).await.ok();
         json!({
-            "head": store.current_head().await,
-            "entries": store.log.entries.len(),
-            "roots": store.load_tree().0.len(),
+            "head": head,
+            "entries": entries,
+            "roots": roots,
             "request_id": Uuid::new_v4().to_string(),
+            "model_registry": registry,
         })
     }
 
     pub async fn handle_request(&self, request: ClientRequest) -> Result<Vec<ServerEvent>> {
         let request_id = request.request_id().map(str::to_string);
         let response = match request {
-            ClientRequest::Prompt { .. } | ClientRequest::Steer { .. } | ClientRequest::FollowUp { .. } => {
-                self.handle_turn(request).await
-            }
+            ClientRequest::Prompt { .. }
+            | ClientRequest::Steer { .. }
+            | ClientRequest::FollowUp { .. } => self.handle_turn(request).await,
             ClientRequest::Abort { .. } => {
                 self.request_abort().await;
                 Ok(vec![ServerEvent::State {
@@ -162,10 +249,7 @@ impl Agent {
                 }])
             }
             ClientRequest::NewSession { .. } => Ok(self.new_session().await?),
-            ClientRequest::Unknown {
-                request_type,
-                ..
-            } => Ok(vec![make_error_event(
+            ClientRequest::Unknown { request_type, .. } => Ok(vec![make_error_event(
                 "unsupported_message_type",
                 format!("unsupported request type: {request_type}"),
                 request_id,
@@ -242,7 +326,13 @@ impl Agent {
                 role: "user".to_string(),
                 content: message,
             }],
-            tools: self.config.tool_registry.list().iter().map(|tool| tool.name.clone()).collect(),
+            tools: self
+                .config
+                .tool_registry
+                .list()
+                .iter()
+                .map(|tool| tool.name.clone())
+                .collect(),
             stream: true,
             temperature: 0.2,
             metadata: Default::default(),
@@ -250,13 +340,21 @@ impl Agent {
 
         let mut aggregate = String::new();
         let mut stream = self.config.provider.stream(completion, request_id.clone());
+        let session_usage_base = {
+            let store = self.config.session_store.lock().await;
+            usage_totals_from_log(&store)
+        };
+        let mut turn_usage = UsageTotals::default();
         let mut state = self.state.lock().await;
         *state = RunState::Running;
         drop(state);
 
         while let Some(event) = stream.next().await {
             match event {
-                ProviderEvent::TextDelta { text, request_id: _ } => {
+                ProviderEvent::TextDelta {
+                    text,
+                    request_id: _,
+                } => {
                     aggregate.push_str(&text);
                     events.push(ServerEvent::MessageUpdate {
                         v: protocol_version(),
@@ -266,7 +364,10 @@ impl Agent {
                         done: false,
                     });
                 }
-                ProviderEvent::ThinkingDelta { text, request_id: _ } => {
+                ProviderEvent::ThinkingDelta {
+                    text,
+                    request_id: _,
+                } => {
                     aggregate.push_str(&text);
                     events.push(ServerEvent::MessageUpdate {
                         v: protocol_version(),
@@ -313,7 +414,11 @@ impl Agent {
                                 request_id: request_id.clone(),
                                 tool_name: "unknown".to_string(),
                                 call_id,
-                                error: ProtocolErrorPayload::new("tool_call_error", err.to_string(), None),
+                                error: ProtocolErrorPayload::new(
+                                    "tool_call_error",
+                                    err.to_string(),
+                                    None,
+                                ),
                             });
                         }
                     }
@@ -322,9 +427,32 @@ impl Agent {
                     aggregate.push_str(&format!("\n[done:{stop_reason}]"));
                     break;
                 }
-                ProviderEvent::Usage { .. } => {}
+                ProviderEvent::Usage {
+                    input_tokens,
+                    output_tokens,
+                    cached_tokens,
+                    cost_usd,
+                    ..
+                } => {
+                    turn_usage.add_event(input_tokens, output_tokens, cached_tokens, cost_usd);
+                    let session_usage = session_usage_base.with_added(turn_usage);
+                    let payload = json!({
+                        "type": "usage_totals",
+                        "turn": turn_usage.to_json(),
+                        "session": session_usage.to_json(),
+                    });
+                    let mut store = self.config.session_store.lock().await;
+                    store
+                        .append(pi_protocol::session::SessionEntryKind::SessionMetadata { payload })
+                        .await
+                        .map_err(|err| AgentError::Session(err.to_string()))?;
+                }
                 ProviderEvent::Error { message, .. } => {
-                    events.push(make_error_event("provider_error", message, request_id.clone()));
+                    events.push(make_error_event(
+                        "provider_error",
+                        message,
+                        request_id.clone(),
+                    ));
                     break;
                 }
             }
@@ -390,11 +518,16 @@ impl Agent {
         let result = self
             .config
             .tool_registry
-            .execute(&name, &call, &self.config.tool_policy, &self.config.workspace_root)
+            .execute(
+                &name,
+                &call,
+                &self.config.tool_policy,
+                &self.config.workspace_root,
+            )
             .map_err(|err| AgentError::Tool(err.to_string()))?;
 
-        let output_json = serde_json::to_value(&result)
-            .map_err(|err| AgentError::Tool(err.to_string()))?;
+        let output_json =
+            serde_json::to_value(&result).map_err(|err| AgentError::Tool(err.to_string()))?;
 
         {
             let mut store = self.config.session_store.lock().await;
