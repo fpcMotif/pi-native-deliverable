@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 
-use pi_protocol::{make_error_event, parse_client_request, protocol_version, to_json_line, ServerEvent};
+use pi_protocol::{
+    make_error_event, parse_client_request, protocol_version, to_json_line, ServerEvent,
+};
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt};
 
 use crate::agent::Agent;
@@ -27,6 +29,9 @@ pub async fn run_rpc(agent: &Agent) -> std::io::Result<()> {
             "session": {
                 "tree": true,
                 "compaction": true,
+                "continue": true,
+                "open": true,
+                "branch": true,
             },
             "search": {
                 "persistent": true,
