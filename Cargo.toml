@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "crates/pi-config",
   "crates/pi-protocol",
   "crates/pi-session",
   "crates/pi-search",
@@ -49,6 +50,7 @@ pi-tools = { path = "crates/pi-tools" }
 pi-search = { path = "crates/pi-search" }
 pi-llm = { path = "crates/pi-llm", default-features = false, features = ["openai"] }
 pi-ext = { path = "crates/pi-ext" }
+pi-config = { path = "crates/pi-config" }
 serde_json.workspace = true
 uuid.workspace = true
 

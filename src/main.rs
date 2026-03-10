@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 use clap::{Parser, Subcommand, ValueEnum};
+use pi_config::{Catalog, ResourceKind};
 use pi_core::{run_rpc, Agent, AgentConfig};
 use pi_ext::RuntimeHost;
 use pi_llm::{MockProvider, Provider};
@@ -10,7 +11,7 @@ use pi_session::SessionStore;
 use pi_tools::{default_registry, Policy};
 use std::io::{self, Write};
 use std::path::PathBuf;
-use tokio::io::{self as tokio_io, AsyncBufReadExt};
+use tokio::io::{self as tokio_io, AsyncBufReadExt, AsyncWriteExt};
 use uuid::Uuid;
 
 #[derive(Parser, Debug)]
@@ -81,6 +82,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => std::env::current_dir()?,
     };
     let line_limit = cli.line_limit.unwrap_or(1024 * 1024);
+    let mut catalog = Catalog::discover(&workspace);
+    print_catalog_diagnostics(&catalog);
 
     let provider = build_provider(&cli.provider).await;
 
@@ -155,25 +158,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let _ = writeln!(io::stdout(), "missing --prompt in print mode");
             }
         }
-        Mode::Interactive => run_interactive(agent).await,
+        Mode::Interactive => run_interactive(agent, workspace, &mut catalog).await,
     }
 
     Ok(())
 }
 
-async fn run_protocol_schema(out: PathBuf) {
+async fn run_protocol_schema(_out: PathBuf) {
     #[cfg(feature = "protocol-schema")]
     {
-        if let Some(parent) = out.parent() {
+        if let Some(parent) = _out.parent() {
             let _ = tokio::fs::create_dir_all(parent).await;
         }
         let schema = pi_protocol::schema_json();
         let text = serde_json::to_string_pretty(&schema).expect("schema");
-        if let Err(err) = tokio::fs::write(&out, text).await {
+        if let Err(err) = tokio::fs::write(&_out, text).await {
             let _ = writeln!(io::stderr(), "failed writing schema: {err}");
             return;
         }
-        let _ = writeln!(io::stdout(), "wrote protocol schema to {}", out.display());
+        let _ = writeln!(io::stdout(), "wrote protocol schema to {}", _out.display());
     }
 
     #[cfg(not(feature = "protocol-schema"))]
@@ -195,7 +198,7 @@ async fn print_events_to_stdout(events: &[ServerEvent]) {
     }
 }
 
-async fn run_interactive(agent: Agent) {
+async fn run_interactive(agent: Agent, workspace: PathBuf, catalog: &mut Catalog) {
     let mut out = io::stdout();
     let mut lines = tokio_io::BufReader::new(tokio_io::stdin()).lines();
     loop {
@@ -220,7 +223,34 @@ async fn run_interactive(agent: Agent) {
                     let _ = out.write_all(format!("reload error: {err}\n").as_bytes());
                 }
             }
+            *catalog = Catalog::discover(&workspace);
+            print_catalog_diagnostics(catalog);
+            let _ = out
+                .write_all(format!("reloaded {} catalog items\n", catalog.items.len()).as_bytes());
             let _ = out.flush();
+            continue;
+        }
+        if line == "/skills" {
+            for skill in catalog.enabled_items(ResourceKind::Skill) {
+                let _ =
+                    out.write_all(format!("- {}: {}\n", skill.name, skill.description).as_bytes());
+            }
+            continue;
+        }
+        if let Some(skill_name) = line.strip_prefix("/skill ") {
+            match catalog.load_detail(ResourceKind::Skill, skill_name.trim()) {
+                Some(Ok(text)) => {
+                    let _ = out.write_all(text.as_bytes());
+                    let _ = out.write_all(b"\n");
+                }
+                Some(Err(err)) => {
+                    let _ =
+                        out.write_all(format!("failed loading skill detail: {err}\n").as_bytes());
+                }
+                None => {
+                    let _ = out.write_all(b"unknown or disabled skill\n");
+                }
+            }
             continue;
         }
         if line.trim().is_empty() {
@@ -264,6 +294,18 @@ async fn run_interactive(agent: Agent) {
         }
 
         let _ = out.flush();
+    }
+}
+
+fn print_catalog_diagnostics(catalog: &Catalog) {
+    for diagnostic in &catalog.diagnostics {
+        let _ = writeln!(
+            io::stderr(),
+            "config diagnostic [{}] {}: {}",
+            diagnostic.kind.as_str(),
+            diagnostic.path.display(),
+            diagnostic.message
+        );
     }
 }
 
