@@ -5,6 +5,7 @@ use pi_config::{Catalog, ResourceKind};
 use pi_core::{run_rpc, Agent, AgentConfig};
 use pi_ext::RuntimeHost;
 use pi_llm::{MockProvider, Provider};
+use pi_protocol::rpc::ClientRequest;
 use pi_protocol::{parse_client_request, protocol_version, to_json_line, ServerEvent};
 use pi_search::{SearchQuery, SearchService, SearchServiceConfig};
 use pi_session::SessionStore;
@@ -46,6 +47,19 @@ struct Cli {
 
     #[arg(long)]
     line_limit: Option<usize>,
+
+    #[arg(long, help = "Continue from the current session head")]
+    continue_last: bool,
+
+    #[arg(long, value_name = "PATH", help = "Open a specific session file path")]
+    open_by_path: Option<PathBuf>,
+
+    #[arg(
+        long,
+        value_name = "TURN_ID",
+        help = "Fork session from an existing turn id"
+    )]
+    branch_from_turn: Option<String>,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -153,6 +167,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let agent = Agent::new(config).await;
+    apply_startup_session_controls(&agent, &cli).await;
 
     match cli.command {
         Some(Command::Protocol {
@@ -370,6 +385,10 @@ async fn run_interactive(agent: Agent, workspace: PathBuf, catalog: &mut Catalog
             continue;
         }
 
+        if handle_interactive_session_command(&agent, &line, &mut out).await {
+            continue;
+        }
+
         let line = search_service.complete_path_refs(&line, 40).await;
         let request = match parse_client_request(
             &serde_json::json!({
@@ -474,6 +493,54 @@ async fn handle_slash_command(
         }
         "/exit" => true,
         _ => false,
+    }
+}
+
+async fn handle_interactive_session_command(
+    agent: &Agent,
+    line: &str,
+    out: &mut std::io::Stdout,
+) -> bool {
+    let trimmed = line.trim();
+    let request = if trimmed == "/continue-last" {
+        Some(ClientRequest::CheckoutBranchHead {
+            v: protocol_version(),
+            id: Some(Uuid::new_v4().to_string()),
+            from_turn_id: None,
+        })
+    } else if let Some(path) = trimmed.strip_prefix("/open-by-path ") {
+        Some(ClientRequest::SelectSessionPath {
+            v: protocol_version(),
+            id: Some(Uuid::new_v4().to_string()),
+            path: path.trim().to_string(),
+        })
+    } else if let Some(turn_id) = trimmed.strip_prefix("/branch-from-turn ") {
+        Some(ClientRequest::ForkSession {
+            v: protocol_version(),
+            id: Some(Uuid::new_v4().to_string()),
+            from_turn_id: turn_id.trim().to_string(),
+        })
+    } else {
+        None
+    };
+
+    if let Some(request) = request {
+        match agent.handle_request(request).await {
+            Ok(events) => {
+                for event in events {
+                    if let Ok(line) = to_json_line(&event) {
+                        let _ = out.write_all(line.as_bytes());
+                    }
+                }
+                let _ = out.flush();
+            }
+            Err(err) => {
+                let _ = out.write_all(format!("agent error: {err}\n").as_bytes());
+            }
+        }
+        true
+    } else {
+        false
     }
 }
 

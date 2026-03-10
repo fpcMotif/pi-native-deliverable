@@ -108,6 +108,21 @@ pub enum ClientRequest {
         v: String,
         id: Option<String>,
     },
+    SelectSessionPath {
+        v: String,
+        id: Option<String>,
+        path: String,
+    },
+    ForkSession {
+        v: String,
+        id: Option<String>,
+        from_turn_id: String,
+    },
+    CheckoutBranchHead {
+        v: String,
+        id: Option<String>,
+        from_turn_id: Option<String>,
+    },
     Unknown {
         v: String,
         id: Option<String>,
@@ -126,6 +141,9 @@ impl ClientRequest {
             | Self::GetState { id, .. }
             | Self::Compact { id, .. }
             | Self::NewSession { id, .. }
+            | Self::SelectSessionPath { id, .. }
+            | Self::ForkSession { id, .. }
+            | Self::CheckoutBranchHead { id, .. }
             | Self::Unknown { id, .. } => id.as_deref(),
         }
     }
@@ -139,6 +157,9 @@ impl ClientRequest {
             | Self::GetState { v, .. }
             | Self::Compact { v, .. }
             | Self::NewSession { v, .. }
+            | Self::SelectSessionPath { v, .. }
+            | Self::ForkSession { v, .. }
+            | Self::CheckoutBranchHead { v, .. }
             | Self::Unknown { v, .. } => v.as_str(),
         }
     }
@@ -367,6 +388,9 @@ enum RpcEnvelopeType {
     GetState,
     Compact,
     NewSession,
+    SelectSessionPath,
+    ForkSession,
+    CheckoutBranchHead,
     Unknown,
 }
 
@@ -412,6 +436,27 @@ struct CompactRequest {
     keep_recent_tokens: Option<u32>,
 }
 
+#[derive(Deserialize)]
+struct SessionPathRequest {
+    v: String,
+    id: Option<serde_json::Value>,
+    path: String,
+}
+
+#[derive(Deserialize)]
+struct ForkSessionRequest {
+    v: String,
+    id: Option<serde_json::Value>,
+    from_turn_id: serde_json::Value,
+}
+
+#[derive(Deserialize)]
+struct CheckoutBranchHeadRequest {
+    v: String,
+    id: Option<serde_json::Value>,
+    from_turn_id: Option<serde_json::Value>,
+}
+
 pub fn parse_client_request(raw: &str) -> Result<ClientRequest, ProtocolError> {
     let envelope = serde_json::from_str::<Value>(raw)?;
     let Value::Object(mut raw_map) = envelope else {
@@ -442,6 +487,9 @@ pub fn parse_client_request(raw: &str) -> Result<ClientRequest, ProtocolError> {
         "get_state" => RpcEnvelopeType::GetState,
         "compact" => RpcEnvelopeType::Compact,
         "new_session" => RpcEnvelopeType::NewSession,
+        "select_session_path" => RpcEnvelopeType::SelectSessionPath,
+        "fork_session" => RpcEnvelopeType::ForkSession,
+        "checkout_branch_head" => RpcEnvelopeType::CheckoutBranchHead,
         _ => RpcEnvelopeType::Unknown,
     };
 
@@ -508,6 +556,36 @@ pub fn parse_client_request(raw: &str) -> Result<ClientRequest, ProtocolError> {
                 id: as_opt_string(request.id),
             }
         }
+        RpcEnvelopeType::SelectSessionPath => {
+            let request: SessionPathRequest = deserialize_request(Value::Object(raw_map.clone()))?;
+            validate_version(&request.v)?;
+            ClientRequest::SelectSessionPath {
+                v: request.v,
+                id: as_opt_string(request.id),
+                path: request.path,
+            }
+        }
+        RpcEnvelopeType::ForkSession => {
+            let request: ForkSessionRequest = deserialize_request(Value::Object(raw_map.clone()))?;
+            validate_version(&request.v)?;
+            let from_turn_id = as_value_to_string(request.from_turn_id)
+                .ok_or_else(|| ProtocolError::InvalidPayload("missing from_turn_id".to_string()))?;
+            ClientRequest::ForkSession {
+                v: request.v,
+                id: as_opt_string(request.id),
+                from_turn_id,
+            }
+        }
+        RpcEnvelopeType::CheckoutBranchHead => {
+            let request: CheckoutBranchHeadRequest =
+                deserialize_request(Value::Object(raw_map.clone()))?;
+            validate_version(&request.v)?;
+            ClientRequest::CheckoutBranchHead {
+                v: request.v,
+                id: as_opt_string(request.id),
+                from_turn_id: request.from_turn_id.and_then(as_value_to_string),
+            }
+        }
         RpcEnvelopeType::Unknown => {
             return Err(ProtocolError::UnsupportedMessageType(
                 raw_request_type.to_string(),
@@ -563,7 +641,7 @@ pub fn schema_json() -> Value {
     let envelope_request = serde_json::json!({
         "client_request": {
             "v": PROTOCOL_VERSION,
-            "type": ["prompt", "steer", "follow_up", "abort", "get_state", "compact", "new_session"],
+            "type": ["prompt", "steer", "follow_up", "abort", "get_state", "compact", "new_session", "select_session_path", "fork_session", "checkout_branch_head"],
             "id": "string"
         },
         "server_event": {

@@ -29,6 +29,9 @@ pub async fn run_rpc(agent: &Agent) -> std::io::Result<()> {
             "session": {
                 "tree": true,
                 "compaction": true,
+                "select_path": true,
+                "fork": true,
+                "checkout_branch_head": true,
             },
             "search": {
                 "persistent": true,

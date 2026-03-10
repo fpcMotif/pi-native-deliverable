@@ -117,8 +117,26 @@ impl Agent {
         let runner = self.clone();
 
         tokio::spawn(async move {
-            while let Some(request) = receiver.recv().await {
-                let _ = runner.handle_request(request).await;
+            while let Some(command) = receiver.recv().await {
+                match command {
+                    Command::Prompt(request)
+                    | Command::Steer(request)
+                    | Command::FollowUp(request) => {
+                        let _ = runner.handle_request(request).await;
+                    }
+                    Command::Abort => {
+                        let _ = runner.request_abort().await;
+                    }
+                    Command::GetState => {
+                        let _ = runner.current_state_payload().await;
+                    }
+                    Command::Compact => {
+                        let _ = runner.compact_session().await;
+                    }
+                    Command::NewSession => {
+                        let _ = runner.new_session().await;
+                    }
+                }
             }
         });
 
@@ -166,6 +184,15 @@ impl Agent {
                 }])
             }
             ClientRequest::NewSession { .. } => Ok(self.new_session().await?),
+            ClientRequest::SelectSessionPath { path, .. } => {
+                Ok(self.select_session_path(path).await?)
+            }
+            ClientRequest::ForkSession { from_turn_id, .. } => {
+                Ok(self.fork_session(from_turn_id).await?)
+            }
+            ClientRequest::CheckoutBranchHead { from_turn_id, .. } => {
+                Ok(self.checkout_branch_head(from_turn_id).await?)
+            }
             ClientRequest::Unknown { request_type, .. } => Ok(vec![make_error_event(
                 "unsupported_message_type",
                 format!("unsupported request type: {request_type}"),
@@ -205,6 +232,83 @@ impl Agent {
             .await
             .map(|_| ())
             .map_err(|err| AgentError::Session(err.to_string()))
+    }
+
+    async fn select_session_path(&self, path: String) -> Result<Vec<ServerEvent>> {
+        let resolved = SessionStore::resolve_session_path(&path, &self.config.workspace_root)
+            .map_err(|err| AgentError::Session(err.to_string()))?;
+        let mut new_store = SessionStore::new(resolved.clone())
+            .await
+            .map_err(|err| AgentError::Session(err.to_string()))?;
+        new_store
+            .append(pi_protocol::session::SessionEntryKind::SessionMetadata {
+                payload: json!({"action":"select_session_path", "path": resolved}),
+            })
+            .await
+            .map_err(|err| AgentError::Session(err.to_string()))?;
+        {
+            let mut store = self.config.session_store.lock().await;
+            *store = new_store;
+        }
+
+        Ok(vec![ServerEvent::State {
+            v: protocol_version(),
+            id: Some(Uuid::new_v4().to_string()),
+            request_id: None,
+            payload: json!({"state": "session_path_selected", "path": path}),
+        }])
+    }
+
+    async fn fork_session(&self, from_turn_id: String) -> Result<Vec<ServerEvent>> {
+        let from_entry_id = Uuid::parse_str(&from_turn_id)
+            .map_err(|err| AgentError::State(format!("invalid turn id: {err}")))?;
+        let mut store = self.config.session_store.lock().await;
+        let head = store
+            .branch_from(from_entry_id)
+            .await
+            .map_err(|err| AgentError::Session(err.to_string()))?;
+        let _ = store.checkout(head).await;
+
+        Ok(vec![ServerEvent::State {
+            v: protocol_version(),
+            id: Some(Uuid::new_v4().to_string()),
+            request_id: None,
+            payload: json!({"state": "session_forked", "from_turn_id": from_turn_id, "head": head}),
+        }])
+    }
+
+    async fn checkout_branch_head(&self, from_turn_id: Option<String>) -> Result<Vec<ServerEvent>> {
+        let mut store = self.config.session_store.lock().await;
+        let branch_anchor = from_turn_id.clone();
+        let target = if let Some(anchor_id) = branch_anchor.as_deref() {
+            let root = Uuid::parse_str(anchor_id)
+                .map_err(|err| AgentError::State(format!("invalid turn id: {err}")))?;
+            resolve_branch_head(&store.log.entries, store.load_tree().1, root)
+                .ok_or_else(|| AgentError::Session(format!("entry {anchor_id} not found")))?
+        } else {
+            store
+                .current_head()
+                .await
+                .ok_or_else(|| AgentError::Session("cannot continue empty session".to_string()))?
+        };
+
+        if !store.checkout(target).await {
+            return Err(AgentError::Session(format!("entry {target} not found")));
+        }
+
+        store
+            .append(pi_protocol::session::SessionEntryKind::SessionMetadata {
+                payload: json!({"action":"checkout_branch_head", "from_turn_id": branch_anchor, "head": target}),
+            })
+            .await
+            .map_err(|err| AgentError::Session(err.to_string()))?;
+
+        Ok(vec![ServerEvent::State {
+            v: protocol_version(),
+            id: Some(Uuid::new_v4().to_string()),
+            request_id: None,
+            payload: json!({"state": "branch_head_checked_out", "head": target}),
+        }])
     }
 
     async fn request_abort(&self) {
@@ -540,6 +644,33 @@ impl Agent {
 
         Ok(ToolCallResultOutput { tool_name, result })
     }
+}
+
+fn resolve_branch_head(
+    entries: &[pi_protocol::session::SessionEntry],
+    children: &std::collections::HashMap<Uuid, Vec<Uuid>>,
+    root: Uuid,
+) -> Option<Uuid> {
+    if !entries.iter().any(|entry| entry.entry_id == root) {
+        return None;
+    }
+
+    let mut stack = vec![root];
+    let mut reachable = std::collections::HashSet::new();
+    while let Some(node) = stack.pop() {
+        if !reachable.insert(node) {
+            continue;
+        }
+        if let Some(next) = children.get(&node) {
+            stack.extend(next.iter().copied());
+        }
+    }
+
+    entries
+        .iter()
+        .rev()
+        .find(|entry| reachable.contains(&entry.entry_id))
+        .map(|entry| entry.entry_id)
 }
 
 struct ToolCallResultOutput {
