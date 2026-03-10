@@ -169,6 +169,7 @@ impl Default for SearchServiceConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct IndexedFile {
     relative_path: String,
+    relative_path_lc: String,
     absolute_path: PathBuf,
     size_bytes: u64,
     mtime_ms: u64,
@@ -262,8 +263,10 @@ impl SearchService {
                     })
                     .unwrap_or(0);
 
+                let relative_path_lc = relative.to_lowercase();
                 items.push(IndexedFile {
                     relative_path: relative,
+                    relative_path_lc,
                     absolute_path: path.to_path_buf(),
                     size_bytes: metadata.len(),
                     mtime_ms: modified_ms,
@@ -341,7 +344,9 @@ impl SearchService {
                             }
                             if service.config.use_git_status {
                                 if let Err(err) = service.refresh_git_status().await {
-                                    eprintln!("pi-search: watcher refresh_git_status failed: {err}");
+                                    eprintln!(
+                                        "pi-search: watcher refresh_git_status failed: {err}"
+                                    );
                                 }
                             }
                         }
@@ -388,7 +393,7 @@ impl SearchService {
                 continue;
             }
 
-            let base = score_path_match(&entry.relative_path, &needle);
+            let base = score_path_match(&entry.relative_path_lc, &needle);
             if base <= 0.0 {
                 continue;
             }
@@ -826,18 +831,17 @@ fn should_ignore_path(relative: &str) -> bool {
         || relative.starts_with("node_modules/")
 }
 
-fn score_path_match(path: &str, query: &str) -> f64 {
+fn score_path_match(path_lc: &str, query: &str) -> f64 {
     if query.is_empty() {
         return 0.0;
     }
-    let path_lc = path.to_lowercase();
     if path_lc == query {
         return 1.0;
     }
     if path_lc.contains(query) {
         return 0.9;
     }
-    normalized_levenshtein(&path_lc, query)
+    normalized_levenshtein(path_lc, query)
 }
 
 fn score_filename_bonus(path: &str, query: &str) -> f64 {
@@ -917,4 +921,3 @@ pub fn decode_token(token: &str) -> SearchResult<usize> {
         .try_into()
         .map_err(|_| SearchError::InvalidToken("token overflow".to_string()))?)
 }
-
