@@ -679,10 +679,9 @@ fn matches_filters(entry: &IndexedFile, filters: &[SearchFilter], query: &str) -
     }
 
     for filter in filters {
-        let ext_ok = filter
-            .extension
-            .as_ref()
-            .map_or(true, |ext| entry.relative_path.ends_with(&format!(".{ext}")));
+        let ext_ok = filter.extension.as_ref().map_or(true, |ext| {
+            entry.relative_path.ends_with(&format!(".{ext}"))
+        });
         let scope_ok = filter
             .path_prefix
             .as_ref()
@@ -750,7 +749,6 @@ fn collect_fuzzy_spans(line: &str, pattern: &str) -> Vec<GrepMatchSpan> {
             }
         })
 }
-
 
 fn should_ignore_path(relative: &str) -> bool {
     relative.starts_with(".git/")
