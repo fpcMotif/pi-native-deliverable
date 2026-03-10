@@ -35,13 +35,31 @@ pub struct Agent {
 }
 
 #[derive(Debug)]
+enum Command {
+    Prompt(ClientRequest),
+    Steer(ClientRequest),
+    FollowUp(ClientRequest),
+    Abort,
+    GetState,
+    Compact,
+    NewSession,
+}
+
+#[derive(Debug)]
 pub struct CommandBus {
-    sender: mpsc::Sender<ClientRequest>,
+    sender: mpsc::Sender<Command>,
 }
 
 impl CommandBus {
     pub fn sender(&self) -> mpsc::Sender<ClientRequest> {
-        self.sender.clone()
+        let tx = self.sender.clone();
+        let (request_tx, mut request_rx) = mpsc::channel::<ClientRequest>(32);
+        tokio::spawn(async move {
+            while let Some(req) = request_rx.recv().await {
+                let _ = tx.send(Command::Prompt(req)).await;
+            }
+        });
+        request_tx
     }
 }
 

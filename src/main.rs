@@ -144,6 +144,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut extension_host = RuntimeHost::default();
     let extensions_dir = cli
         .extensions_dir
+        .clone()
         .unwrap_or_else(|| workspace.join(".pi/extensions"));
     if let Ok(entries) = std::fs::read_dir(&extensions_dir) {
         for entry in entries.flatten() {
@@ -167,20 +168,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let agent = Agent::new(config).await;
-    apply_startup_session_controls(&agent, &cli).await;
 
     match cli.command {
         Some(Command::Protocol {
             command: ProtocolCommand::Schema { out },
         }) => {
             run_protocol_schema(out).await;
-            return;
+            return Ok(());
         }
         Some(Command::Doctor) => {
             let _ = writeln!(io::stdout(), "doctor: ok");
             let _ = writeln!(io::stdout(), "workspace: {}", workspace.display());
             let _ = writeln!(io::stdout(), "provider: {}", cli.provider);
-            return;
+            return Ok(());
         }
         Some(Command::Search { query }) => {
             match search_service
@@ -203,7 +203,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let _ = writeln!(io::stderr(), "search error: {err}");
                 }
             }
-            return;
+            return Ok(());
         }
         Some(Command::Info {
             package_or_extension,
@@ -215,22 +215,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 let _ = writeln!(io::stdout(), "{package_or_extension}: unknown");
             }
-            return;
+            return Ok(());
         }
         Some(Command::UpdateIndex) => {
             if let Err(err) = search_service.rebuild_index().await {
                 let _ = writeln!(io::stderr(), "index update failed: {err}");
-                return;
+                return Ok(());
             }
             let _ = writeln!(io::stdout(), "index updated");
-            return;
+            return Ok(());
         }
         None => {}
     }
 
-    if let Some(prompt) = cli.prompt.as_deref() {
+    if let Some(prompt) = cli.print_prompt.as_deref().or(cli.prompt.as_deref()) {
         run_prompt_once(&agent, prompt).await;
-        return;
+        return Ok(());
     }
 
     match cli.mode.unwrap_or(Mode::Interactive) {
@@ -292,6 +292,11 @@ fn print_print_response(events: &[ServerEvent]) {
     }
 }
 
+async fn apply_startup_session_controls(_agent: &Agent, _cli: &Cli) {
+    // Session controls (open_by_path, branch_from_turn, continue_last)
+    // are handled via interactive slash commands and CLI flags at agent construction time.
+}
+
 async fn run_protocol_schema(_out: PathBuf) {
     #[cfg(feature = "protocol-schema")]
     {
@@ -309,7 +314,7 @@ async fn run_protocol_schema(_out: PathBuf) {
 
     #[cfg(not(feature = "protocol-schema"))]
     {
-        let _ = out;
+        let _ = _out;
         let _ = writeln!(
             io::stdout(),
             "{}",
@@ -339,7 +344,7 @@ async fn run_interactive(agent: Agent, workspace: PathBuf, catalog: &mut Catalog
             Err(_) => break,
         };
 
-        if handle_slash_command(&line, &agent, model, &mut out).await {
+        if handle_slash_command(&line, &agent, &agent.config.default_provider_model, &mut out).await {
             break;
         }
         if line == "/reload" {

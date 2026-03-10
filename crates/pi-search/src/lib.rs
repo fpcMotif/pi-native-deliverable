@@ -198,7 +198,10 @@ pub struct SearchService {
 }
 
 impl SearchService {
-    pub async fn new(config: SearchServiceConfig) -> SearchResult<std::sync::Arc<Self>> {
+    pub async fn new(mut config: SearchServiceConfig) -> SearchResult<std::sync::Arc<Self>> {
+        if config.index_path.is_none() {
+            config.index_path = Some(config.workspace_root.join(INDEX_CACHE_FILE));
+        }
         let service = std::sync::Arc::new(Self {
             config,
             index: RwLock::new(Vec::new()),
@@ -300,6 +303,11 @@ impl SearchService {
         if let Some(path) = &self.config.index_path {
             if let Ok(bytes) = tokio::fs::read(path).await {
                 if let Ok(items) = serde_json::from_slice::<Vec<IndexedFile>>(&bytes) {
+                    // Staleness check: verify all cached files still exist on disk
+                    let stale = items.iter().any(|f| !f.absolute_path.exists());
+                    if stale {
+                        return false;
+                    }
                     *self.index.write().await = items;
                     return true;
                 }

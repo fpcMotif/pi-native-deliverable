@@ -62,16 +62,21 @@ impl SessionStore {
             workspace_root.join(requested)
         };
         let normalized = normalize_path(&candidate);
-        if !normalized.starts_with(&workspace_root) {
+        // Canonicalize the parent to resolve symlinks (e.g. /tmp -> /private/tmp on macOS)
+        let resolved = if let Some(parent) = normalized.parent() {
+            fs::create_dir_all(parent)?;
+            parent.canonicalize()
+                .map(|p| p.join(normalized.file_name().unwrap_or_default()))
+                .unwrap_or(normalized.clone())
+        } else {
+            normalized.clone()
+        };
+        if !resolved.starts_with(&workspace_root) {
             return Err(SessionError::InvalidPath(
                 "session path is outside workspace".to_string(),
             ));
         }
-
-        if let Some(parent) = normalized.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        Ok(normalized)
+        Ok(resolved)
     }
 
     pub async fn new(path: impl Into<PathBuf>) -> Result<Self> {

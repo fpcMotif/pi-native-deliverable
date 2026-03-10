@@ -32,6 +32,7 @@ async fn build_agent(workspace: &std::path::Path) -> Agent {
         workspace_root: workspace.to_path_buf(),
         default_provider_model: "mock-tool-call".to_string(),
         line_limit: 1024 * 1024,
+        extension_host: Arc::new(Mutex::new(pi_ext::RuntimeHost::default())),
     })
     .await
 }
