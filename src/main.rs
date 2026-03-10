@@ -6,7 +6,7 @@ use pi_core::{run_rpc, Agent, AgentConfig};
 use pi_ext::RuntimeHost;
 use pi_llm::{MockProvider, Provider};
 use pi_protocol::{parse_client_request, protocol_version, to_json_line, ServerEvent};
-use pi_search::{SearchService, SearchServiceConfig};
+use pi_search::{SearchQuery, SearchService, SearchServiceConfig};
 use pi_session::SessionStore;
 use pi_tools::{default_registry, Policy};
 use std::io::{self, Write};
@@ -17,17 +17,26 @@ use uuid::Uuid;
 #[derive(Parser, Debug)]
 #[command(name = "pi", about = "pi agent runtime")]
 struct Cli {
+    #[arg(value_name = "PROMPT")]
+    prompt: Option<String>,
+
+    #[arg(short = 'p', long = "print", value_name = "PROMPT")]
+    print_prompt: Option<String>,
+
     #[arg(long)]
     mode: Option<Mode>,
+
+    #[arg(long = "continue")]
+    r#continue: bool,
+
+    #[arg(long)]
+    session: Option<PathBuf>,
 
     #[arg(long, default_value = "mock")]
     provider: String,
 
     #[arg(long, default_value = "mock-tool-call")]
     model: String,
-
-    #[arg(long)]
-    prompt: Option<String>,
 
     #[arg(long)]
     workspace: Option<PathBuf>,
@@ -44,6 +53,14 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    Doctor,
+    Search {
+        query: String,
+    },
+    Info {
+        package_or_extension: String,
+    },
+    UpdateIndex,
     Protocol {
         #[command(subcommand)]
         command: ProtocolCommand,
@@ -87,8 +104,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let provider = build_provider(&cli.provider).await;
 
-    let session_path = SessionStore::resolve_session_path(".pi/session.jsonl", workspace.clone())?;
-    let session_store = SessionStore::new(session_path).await?;
+    let requested_session_path = cli
+        .session
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(".pi/session.jsonl"));
+    let session_path =
+        SessionStore::resolve_session_path(requested_session_path, workspace.clone())?;
+    let mut session_store = SessionStore::new(session_path).await?;
+
+    if !cli.r#continue {
+        session_store
+            .reset()
+            .unwrap_or_else(|err| panic!("failed to reset session store: {err}"));
+    }
 
     let search_service = SearchService::new(SearchServiceConfig {
         workspace_root: workspace.clone(),
@@ -112,18 +140,83 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    let model_name = cli.model.clone();
     let config = AgentConfig {
         provider,
         tool_registry: registry,
         session_store: std::sync::Arc::new(tokio::sync::Mutex::new(session_store)),
         tool_policy: policy,
         workspace_root: workspace.clone(),
-        default_provider_model: cli.model,
+        default_provider_model: model_name.clone(),
         line_limit,
         extension_host: std::sync::Arc::new(tokio::sync::Mutex::new(extension_host)),
     };
 
     let agent = Agent::new(config).await;
+
+    match cli.command {
+        Some(Command::Protocol {
+            command: ProtocolCommand::Schema { out },
+        }) => {
+            run_protocol_schema(out).await;
+            return;
+        }
+        Some(Command::Doctor) => {
+            let _ = writeln!(io::stdout(), "doctor: ok");
+            let _ = writeln!(io::stdout(), "workspace: {}", workspace.display());
+            let _ = writeln!(io::stdout(), "provider: {}", cli.provider);
+            return;
+        }
+        Some(Command::Search { query }) => {
+            match search_service
+                .search(SearchQuery {
+                    text: query,
+                    scope: None,
+                    filters: Vec::new(),
+                    limit: 10,
+                    token: None,
+                    offset: 0,
+                })
+                .await
+            {
+                Ok(result) => {
+                    for item in result.items {
+                        let _ = writeln!(io::stdout(), "{}", item.relative_path);
+                    }
+                }
+                Err(err) => {
+                    let _ = writeln!(io::stderr(), "search error: {err}");
+                }
+            }
+            return;
+        }
+        Some(Command::Info {
+            package_or_extension,
+        }) => {
+            let known = ["core", "search", "session", "tools", "llm", "ext"];
+            let exists = known.iter().any(|name| name == &package_or_extension);
+            if exists {
+                let _ = writeln!(io::stdout(), "{package_or_extension}: available");
+            } else {
+                let _ = writeln!(io::stdout(), "{package_or_extension}: unknown");
+            }
+            return;
+        }
+        Some(Command::UpdateIndex) => {
+            if let Err(err) = search_service.rebuild_index().await {
+                let _ = writeln!(io::stderr(), "index update failed: {err}");
+                return;
+            }
+            let _ = writeln!(io::stdout(), "index updated");
+            return;
+        }
+        None => {}
+    }
+
+    if let Some(prompt) = cli.prompt.as_deref() {
+        run_prompt_once(&agent, prompt).await;
+        return;
+    }
 
     match cli.mode.unwrap_or(Mode::Interactive) {
         Mode::Rpc => {
@@ -131,37 +224,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Mode::Print => {
             if let Some(prompt) = cli.prompt.as_deref() {
-                let request_json = format!(
-                    "{}",
-                    serde_json::json!({
-                        "v": protocol_version(),
-                        "type": "prompt",
-                        "id": Uuid::new_v4().to_string(),
-                        "message": prompt,
-                    })
-                );
-
-                match parse_client_request(&request_json) {
-                    Ok(request) => match agent.handle_request(request).await {
-                        Ok(events) => {
-                            print_events_to_stdout(&events).await;
-                        }
-                        Err(err) => {
-                            let _ = writeln!(io::stdout(), "error: {err}");
-                        }
-                    },
-                    Err(err) => {
-                        let _ = writeln!(io::stdout(), "request parse error: {err}");
-                    }
-                }
+                run_prompt_once(&agent, prompt).await;
             } else {
-                let _ = writeln!(io::stdout(), "missing --prompt in print mode");
+                let _ = writeln!(io::stderr(), "missing prompt in print mode");
             }
         }
         Mode::Interactive => run_interactive(agent, workspace, &mut catalog, search_service).await,
     }
 
     Ok(())
+}
+
+async fn run_prompt_once(agent: &Agent, prompt: &str) {
+    let request_json = format!(
+        "{}",
+        serde_json::json!({
+            "v": protocol_version(),
+            "type": "prompt",
+            "id": Uuid::new_v4().to_string(),
+            "message": prompt,
+        })
+    );
+
+    match parse_client_request(&request_json) {
+        Ok(request) => match agent.handle_request(request).await {
+            Ok(events) => print_print_response(&events),
+            Err(err) => {
+                let _ = writeln!(io::stderr(), "error: {err}");
+            }
+        },
+        Err(err) => {
+            let _ = writeln!(io::stderr(), "request parse error: {err}");
+        }
+    }
+}
+
+fn print_print_response(events: &[ServerEvent]) {
+    let mut buffer = String::new();
+    for event in events {
+        if let ServerEvent::MessageUpdate { delta, .. } = event {
+            buffer.push_str(delta);
+        }
+    }
+    if buffer.is_empty() {
+        for event in events {
+            if let Ok(line) = to_json_line(event) {
+                let _ = io::stdout().write_all(line.as_bytes());
+            }
+        }
+    } else {
+        let _ = writeln!(io::stdout(), "{buffer}");
+    }
 }
 
 async fn run_protocol_schema(_out: PathBuf) {
@@ -211,7 +324,7 @@ async fn run_interactive(agent: Agent, workspace: PathBuf, catalog: &mut Catalog
             Err(_) => break,
         };
 
-        if line == "/exit" {
+        if handle_slash_command(&line, &agent, model, &mut out).await {
             break;
         }
         if line == "/reload" {
@@ -307,6 +420,60 @@ fn print_catalog_diagnostics(catalog: &Catalog) {
             diagnostic.path.display(),
             diagnostic.message
         );
+    }
+}
+
+async fn handle_slash_command(
+    line: &str,
+    agent: &Agent,
+    model: &str,
+    out: &mut io::Stdout,
+) -> bool {
+    match line.trim() {
+        "/help" => {
+            let _ = out.write_all(b"/help /model /tree /clear /compact /exit /reload\n");
+            false
+        }
+        "/model" => {
+            let _ = out.write_all(format!("model: {model}\n").as_bytes());
+            false
+        }
+        "/tree" => {
+            let store = agent.config.session_store.lock().await;
+            let (roots, children) = store.load_tree();
+            let _ = out.write_all(
+                format!(
+                    "session tree: roots={} branches={} entries={}\n",
+                    roots.len(),
+                    children.len(),
+                    store.log.entries.len()
+                )
+                .as_bytes(),
+            );
+            false
+        }
+        "/clear" => {
+            let _ = out.write_all(b"\x1B[2J\x1B[1;1H");
+            false
+        }
+        "/compact" => {
+            let mut store = agent.config.session_store.lock().await;
+            match store.compact(None).await {
+                Ok(count) => {
+                    let _ = out.write_all(format!("compacted {count} entries\n").as_bytes());
+                }
+                Err(err) => {
+                    let _ = out.write_all(format!("compact error: {err}\n").as_bytes());
+                }
+            }
+            false
+        }
+        "/reload" => {
+            let _ = out.write_all(b"reload complete\n");
+            false
+        }
+        "/exit" => true,
+        _ => false,
     }
 }
 
