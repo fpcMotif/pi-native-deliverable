@@ -1,11 +1,10 @@
+use pi_tools::{
+    is_dangerous_command, AuditRecord, BashTool, Policy, ReadTool, Tool, ToolCall, ToolError,
+    ToolRegistry, WriteTool,
+};
 use serde_json::json;
 use std::fs;
 use std::path::Path;
-use pi_tools::{
-    is_dangerous_command,
-    BashTool, Policy, ReadTool, Tool, ToolCall, WriteTool,
-};
-use pi_tools::ToolError;
 
 /// Tool sandbox: deny writing to secrets by default policy.
 #[test]
@@ -32,6 +31,29 @@ fn tool_policy_denies_env_write() {
     assert!(env_path.exists());
     let stored = fs::read_to_string(&env_path).expect("read");
     assert_eq!(stored, "SECRET=1");
+}
+
+#[test]
+fn policy_presets_have_expected_capabilities() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+
+    let safe = Policy::safe_defaults(tmp.path());
+    let balanced = Policy::balanced_defaults(tmp.path());
+    let permissive = Policy::permissive_defaults(tmp.path());
+
+    assert!(safe.deny_write_paths.iter().any(|v| v == ".bash_history"));
+    assert!(!balanced
+        .deny_write_paths
+        .iter()
+        .any(|v| v == ".bash_history"));
+    assert!(!permissive.deny_write_paths.iter().any(|v| v == ".env"));
+
+    assert!(safe.command_timeout_ms < balanced.command_timeout_ms);
+    assert!(balanced.command_timeout_ms < permissive.command_timeout_ms);
+
+    assert_eq!(safe.explain()["preset"], "safe");
+    assert_eq!(balanced.explain()["preset"], "balanced");
+    assert_eq!(permissive.explain()["preset"], "permissive");
 }
 
 #[test]
@@ -71,6 +93,46 @@ fn tool_policy_blocks_binary_read() {
 }
 
 #[test]
+fn audit_emits_records_for_allowed_and_denied_actions() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let policy = Policy::safe_defaults(tmp.path()).with_session_id("sess-1");
+
+    let mut registry = ToolRegistry::new();
+    registry.register(WriteTool);
+
+    let allowed = ToolCall {
+        id: "write-ok".to_string(),
+        name: "write".to_string(),
+        args: json!({"path":"ok.txt","content":"ok"}),
+    };
+    registry
+        .execute("write", &allowed, &policy, tmp.path())
+        .expect("allowed write should pass");
+
+    let denied = ToolCall {
+        id: "write-denied".to_string(),
+        name: "write".to_string(),
+        args: json!({"path":".env","content":"nope"}),
+    };
+    let deny_result = registry.execute("write", &denied, &policy, tmp.path());
+    assert!(matches!(deny_result, Err(ToolError::Denied(_))));
+
+    let entries = policy.recent_audit_entries(10);
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].decision, "allow");
+    assert_eq!(entries[0].tool_name, "write");
+    assert_eq!(entries[1].decision, "deny");
+    assert_eq!(entries[1].session_id.as_deref(), Some("sess-1"));
+
+    let raw = fs::read_to_string(tmp.path().join(".pi/tool-audit.jsonl")).expect("audit log file");
+    let decoded = raw
+        .lines()
+        .map(|line| serde_json::from_str::<AuditRecord>(line).expect("valid audit record"))
+        .collect::<Vec<_>>();
+    assert_eq!(decoded.len(), 2);
+}
+
+#[test]
 fn bash_dangerous_command_is_blocked() {
     let policy = Policy::safe_defaults(Path::new("/tmp"));
     let tool = BashTool;
@@ -92,3 +154,4 @@ fn bash_dangerous_command_detector_is_stable() {
     assert!(is_dangerous_command("mkfs /dev/sda"));
     assert!(is_dangerous_command(":(){ :|:& };:"));
     assert!(!is_dangerous_command("echo safe"));
+}

@@ -9,7 +9,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 pub type Result<T> = std::result::Result<T, ToolError>;
@@ -79,9 +79,20 @@ impl ToolRegistry {
         self.tools.insert(tool.name().to_string(), Box::new(tool));
     }
 
-    pub fn execute(&self, name: &str, call: &ToolCall, policy: &Policy, cwd: &Path) -> Result<ToolCallResult> {
-        let tool = self.tools.get(name).ok_or_else(|| ToolError::not_found(name))?;
-        tool.execute(call, policy, cwd)
+    pub fn execute(
+        &self,
+        name: &str,
+        call: &ToolCall,
+        policy: &Policy,
+        cwd: &Path,
+    ) -> Result<ToolCallResult> {
+        let tool = self
+            .tools
+            .get(name)
+            .ok_or_else(|| ToolError::not_found(name))?;
+        let result = tool.execute(call, policy, cwd);
+        policy.write_audit_record(AuditRecord::from_invocation(call, &result, policy));
+        result
     }
 
     pub fn list(&self) -> Vec<ToolDefinition> {
@@ -115,6 +126,9 @@ impl ToolRegistry {
 #[derive(Debug, Clone)]
 pub struct Policy {
     pub workspace_root: PathBuf,
+    pub preset: PolicyPreset,
+    pub session_id: Option<String>,
+    pub audit_log_path: PathBuf,
     pub max_stdout_bytes: usize,
     pub max_stderr_bytes: usize,
     pub command_timeout_ms: u64,
@@ -122,22 +136,174 @@ pub struct Policy {
     pub max_file_size: usize,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PolicyPreset {
+    Safe,
+    Balanced,
+    Permissive,
+}
+
+impl PolicyPreset {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Safe => "safe",
+            Self::Balanced => "balanced",
+            Self::Permissive => "permissive",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditRecord {
+    pub timestamp_ms: u128,
+    pub decision: String,
+    pub rule: String,
+    pub tool_name: String,
+    pub args_summary: Value,
+    pub workspace_root: String,
+    pub session_id: Option<String>,
+}
+
+impl AuditRecord {
+    fn from_invocation(call: &ToolCall, result: &Result<ToolCallResult>, policy: &Policy) -> Self {
+        let (decision, rule) = match result {
+            Ok(_) => ("allow".to_string(), "policy_allow".to_string()),
+            Err(ToolError::Denied(message)) => ("deny".to_string(), message.clone()),
+            Err(err) => ("allow".to_string(), format!("execution_error:{err}")),
+        };
+
+        Self {
+            timestamp_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|value| value.as_millis())
+                .unwrap_or_default(),
+            decision,
+            rule,
+            tool_name: call.name.clone(),
+            args_summary: summarize_args(&call.args),
+            workspace_root: policy.workspace_root.to_string_lossy().to_string(),
+            session_id: policy.session_id.clone(),
+        }
+    }
+}
+
 impl Policy {
     pub fn safe_defaults(workspace_root: impl Into<PathBuf>) -> Self {
-        Self {
-            workspace_root: workspace_root.into(),
+        Self::for_preset(workspace_root, PolicyPreset::Safe)
+    }
+
+    pub fn balanced_defaults(workspace_root: impl Into<PathBuf>) -> Self {
+        Self::for_preset(workspace_root, PolicyPreset::Balanced)
+    }
+
+    pub fn permissive_defaults(workspace_root: impl Into<PathBuf>) -> Self {
+        Self::for_preset(workspace_root, PolicyPreset::Permissive)
+    }
+
+    pub fn for_preset(workspace_root: impl Into<PathBuf>, preset: PolicyPreset) -> Self {
+        let workspace_root = workspace_root.into();
+        let mut policy = Self {
+            workspace_root: workspace_root.clone(),
+            preset,
+            session_id: None,
+            audit_log_path: workspace_root.join(".pi").join("tool-audit.jsonl"),
             max_stdout_bytes: 32 * 1024,
             max_stderr_bytes: 8 * 1024,
             command_timeout_ms: 5_000,
-            deny_write_paths: vec![
-                ".env".to_string(),
-                ".env.local".to_string(),
-                ".bash_history".to_string(),
-                "id_rsa".to_string(),
-                "id_rsa.pub".to_string(),
-            ],
+            deny_write_paths: vec![],
             max_file_size: DEFAULT_WRITE_LIMIT_BYTES,
+        };
+
+        match preset {
+            PolicyPreset::Safe => {
+                policy.deny_write_paths = vec![
+                    ".env".to_string(),
+                    ".env.local".to_string(),
+                    ".bash_history".to_string(),
+                    "id_rsa".to_string(),
+                    "id_rsa.pub".to_string(),
+                ];
+                policy.command_timeout_ms = 5_000;
+                policy.max_stdout_bytes = 32 * 1024;
+            }
+            PolicyPreset::Balanced => {
+                policy.deny_write_paths = vec![
+                    ".env".to_string(),
+                    ".env.local".to_string(),
+                    "id_rsa".to_string(),
+                ];
+                policy.command_timeout_ms = 12_000;
+                policy.max_stdout_bytes = 64 * 1024;
+            }
+            PolicyPreset::Permissive => {
+                policy.deny_write_paths = vec!["id_rsa".to_string(), "id_rsa.pub".to_string()];
+                policy.command_timeout_ms = 20_000;
+                policy.max_stdout_bytes = 128 * 1024;
+            }
         }
+
+        policy
+    }
+
+    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
+        self
+    }
+
+    pub fn explain(&self) -> Value {
+        json!({
+            "preset": self.preset.as_str(),
+            "capabilities": {
+                "write_denied_paths": self.deny_write_paths,
+                "command_timeout_ms": self.command_timeout_ms,
+                "max_stdout_bytes": self.max_stdout_bytes,
+                "max_file_size": self.max_file_size,
+            },
+            "audit_log_path": self.audit_log_path,
+            "notes": match self.preset {
+                PolicyPreset::Safe => "safe: strict write denylist and short command timeouts",
+                PolicyPreset::Balanced => "balanced: moderate command limits and reduced denylist",
+                PolicyPreset::Permissive => "permissive: broad write access with only key material blocked",
+            }
+        })
+    }
+
+    pub fn write_audit_record(&self, record: AuditRecord) {
+        let Some(parent) = self.audit_log_path.parent() else {
+            return;
+        };
+        if fs::create_dir_all(parent).is_err() {
+            return;
+        }
+
+        let Ok(mut file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.audit_log_path)
+        else {
+            return;
+        };
+
+        let Ok(line) = serde_json::to_string(&record) else {
+            return;
+        };
+        let _ = writeln!(file, "{line}");
+    }
+
+    pub fn recent_audit_entries(&self, limit: usize) -> Vec<AuditRecord> {
+        let Ok(data) = fs::read_to_string(&self.audit_log_path) else {
+            return vec![];
+        };
+
+        data.lines()
+            .rev()
+            .filter_map(|line| serde_json::from_str::<AuditRecord>(line).ok())
+            .take(limit)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect()
     }
 
     pub fn canonicalize_path(&self, path: &str, cwd: &Path) -> Result<PathBuf> {
@@ -167,7 +333,10 @@ impl Policy {
 
         let parent = requested.parent().unwrap_or(Path::new("."));
         if !parent.exists() {
-            return Err(ToolError::invalid("path", "parent directory does not exist"));
+            return Err(ToolError::invalid(
+                "path",
+                "parent directory does not exist",
+            ));
         }
         let parent = parent
             .canonicalize()
@@ -190,11 +359,30 @@ impl Policy {
         path.components().any(|component| {
             if let Component::Normal(component) = component {
                 let value = OsStr::to_string_lossy(component);
-                self.deny_write_paths.iter().any(|deny| deny == value.as_ref())
+                self.deny_write_paths
+                    .iter()
+                    .any(|deny| deny == value.as_ref())
             } else {
                 false
             }
         })
+    }
+}
+
+fn summarize_args(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut out = serde_json::Map::new();
+            for (key, value) in map {
+                out.insert(key.clone(), summarize_args(value));
+            }
+            Value::Object(out)
+        }
+        Value::Array(items) => json!({"type":"array","len": items.len()}),
+        Value::String(text) => json!({"type":"string","len": text.len()}),
+        Value::Bool(value) => json!({"type":"bool","value": value}),
+        Value::Number(value) => json!({"type":"number","value": value}),
+        Value::Null => json!({"type":"null"}),
     }
 }
 
@@ -268,7 +456,10 @@ where
     call.args
         .get(name)
         .ok_or_else(|| ToolError::invalid(name, "missing"))
-        .and_then(|value| serde_json::from_value(value.clone()).map_err(|err| ToolError::invalid(name, err.to_string())))
+        .and_then(|value| {
+            serde_json::from_value(value.clone())
+                .map_err(|err| ToolError::invalid(name, err.to_string()))
+        })
 }
 
 impl Tool for ReadTool {
@@ -295,8 +486,8 @@ impl Tool for ReadTool {
 
     fn execute(&self, call: &ToolCall, policy: &Policy, cwd: &Path) -> Result<ToolCallResult> {
         let path = read_arg::<String>(call, "path")?;
-        let max = read_arg::<Option<u64>>(call, "max_bytes")?
-            .unwrap_or(policy.max_file_size as u64) as usize;
+        let max = read_arg::<Option<u64>>(call, "max_bytes")?.unwrap_or(policy.max_file_size as u64)
+            as usize;
 
         let normalized = policy.canonicalize_path(&path, cwd)?;
         let mut bytes = Vec::new();
@@ -312,7 +503,10 @@ impl Tool for ReadTool {
             error: None,
             truncated,
             metadata: BTreeMap::from_iter([
-                ("path".to_string(), json!(normalized.to_string_lossy().to_string())),
+                (
+                    "path".to_string(),
+                    json!(normalized.to_string_lossy().to_string()),
+                ),
                 ("bytes".to_string(), json!(bytes.len() as u64)),
             ]),
         })
@@ -345,7 +539,11 @@ impl Tool for WriteTool {
     fn execute(&self, call: &ToolCall, policy: &Policy, cwd: &Path) -> Result<ToolCallResult> {
         let path = read_arg::<String>(call, "path")?;
         let content = read_arg::<String>(call, "content")?;
-        let append = call.args.get("append").and_then(Value::as_bool).unwrap_or(false);
+        let append = call
+            .args
+            .get("append")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
 
         if content.len() > policy.max_file_size {
             return Err(ToolError::Error(format!(
@@ -356,7 +554,10 @@ impl Tool for WriteTool {
 
         let normalized = policy.canonicalize_path(&path, cwd)?;
         if policy.can_write_path(&normalized) {
-            return Err(ToolError::denied(format!("writing denied: {}", normalized.display())));
+            return Err(ToolError::denied(format!(
+                "writing denied: {}",
+                normalized.display()
+            )));
         }
 
         if let Some(parent) = normalized.parent() {
@@ -417,12 +618,14 @@ impl Tool for EditTool {
 
         let normalized = policy.canonicalize_path(&path, cwd)?;
         if policy.can_write_path(&normalized) {
-            return Err(ToolError::denied(format!("editing denied: {}", normalized.display())));
+            return Err(ToolError::denied(format!(
+                "editing denied: {}",
+                normalized.display()
+            )));
         }
 
-        let mut text = fs::read_to_string(&normalized).map_err(|err| {
-            ToolError::Error(format!("read existing file {}", err))
-        })?;
+        let mut text = fs::read_to_string(&normalized)
+            .map_err(|err| ToolError::Error(format!("read existing file {}", err)))?;
 
         let matches = text.matches(&from).count();
         if matches == 0 {
@@ -478,12 +681,12 @@ impl Tool for BashTool {
             return Err(ToolError::denied("command blocked by policy"));
         }
 
-        let timeout_ms =
-            call.args
-                .get("timeout_ms")
-                .and_then(Value::as_u64)
-                .unwrap_or(policy.command_timeout_ms)
-                .min(policy.command_timeout_ms);
+        let timeout_ms = call
+            .args
+            .get("timeout_ms")
+            .and_then(Value::as_u64)
+            .unwrap_or(policy.command_timeout_ms)
+            .min(policy.command_timeout_ms);
 
         let mut child = Command::new("sh");
         child.arg("-lc").arg(command);
@@ -514,8 +717,8 @@ impl Tool for BashTool {
                 status: ToolStatus::Error,
                 error: Some(format!("bash failed: code {code}: {}", stderr_raw)),
                 truncated,
-                metadata: BTreeMap::from_iter([(
-                    "stderr".to_string(), json!(stderr_raw)),
+                metadata: BTreeMap::from_iter([
+                    ("stderr".to_string(), json!(stderr_raw)),
                     ("exit_code".to_string(), json!(code)),
                 ]),
             })
@@ -556,29 +759,37 @@ impl Tool for FindTool {
     fn execute(&self, call: &ToolCall, _policy: &Policy, _cwd: &Path) -> Result<ToolCallResult> {
         let query = read_arg::<String>(call, "query")?;
         let limit = call.args.get("limit").and_then(Value::as_u64).unwrap_or(50) as usize;
-        let scope = call.args.get("scope").and_then(Value::as_str).map(str::to_string);
+        let scope = call
+            .args
+            .get("scope")
+            .and_then(Value::as_str)
+            .map(str::to_string);
 
         let result = if let Ok(handle) = tokio::runtime::Handle::try_current() {
             tokio::task::block_in_place(move || {
-                handle
-                    .block_on(self.search_service.find_files(&SearchQuery {
-                        text: query,
-                        scope,
-                        filters: vec![],
-                        limit,
-                        token: None,
-                        offset: 0,
-                    }))
+                handle.block_on(self.search_service.find_files(&SearchQuery {
+                    text: query,
+                    scope,
+                    filters: vec![],
+                    limit,
+                    token: None,
+                    offset: 0,
+                }))
             })
             .map_err(|err| ToolError::Error(err.to_string()))?
         } else {
-            return Err(ToolError::Error("tool execution requires tokio runtime".to_string()));
+            return Err(ToolError::Error(
+                "tool execution requires tokio runtime".to_string(),
+            ));
         };
 
         let count = result.items.len();
         let mut out = String::new();
         for item in result.items.iter() {
-            out.push_str(&format!("{} (score {:.3})\n", item.relative_path, item.score));
+            out.push_str(&format!(
+                "{} (score {:.3})\n",
+                item.relative_path, item.score
+            ));
         }
 
         Ok(ToolCallResult {
@@ -621,7 +832,11 @@ impl Tool for GrepTool {
             Some("fuzzy") => GrepMode::Fuzzy,
             _ => GrepMode::PlainText,
         };
-        let scope = call.args.get("scope").and_then(Value::as_str).unwrap_or(".");
+        let scope = call
+            .args
+            .get("scope")
+            .and_then(Value::as_str)
+            .unwrap_or(".");
         let limit = call.args.get("limit").and_then(Value::as_u64).unwrap_or(50) as usize;
 
         let response = if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -630,7 +845,9 @@ impl Tool for GrepTool {
             })
             .map_err(|err| ToolError::Error(err.to_string()))?
         } else {
-            return Err(ToolError::Error("tool execution requires tokio runtime".to_string()));
+            return Err(ToolError::Error(
+                "tool execution requires tokio runtime".to_string(),
+            ));
         };
 
         let lines = response
@@ -740,9 +957,7 @@ fn execute_with_timeout(
         }
 
         if let Some(_status) = child.try_wait().map_err(io::Error::other)? {
-            let out = child
-                .wait_with_output()
-                .map_err(io::Error::other)?;
+            let out = child.wait_with_output().map_err(io::Error::other)?;
             return Ok(Some(out));
         }
 
