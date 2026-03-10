@@ -2,12 +2,10 @@
 
 use futures::StreamExt;
 use pi_llm::{CompletionMessage, CompletionRequest, Provider, ProviderEvent};
-use pi_protocol::{
-    make_error_event, protocol_version, ProtocolErrorPayload, ServerEvent,
-};
 use pi_protocol::rpc::ClientRequest;
+use pi_protocol::{make_error_event, protocol_version, ProtocolErrorPayload, ServerEvent};
 use pi_session::SessionStore;
-use pi_tools::{ToolCall, ToolCallResult, ToolRegistry};
+use pi_tools::{extract_denial_context, ToolCall, ToolCallResult, ToolRegistry};
 use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -15,6 +13,15 @@ use tokio::sync::{mpsc, Mutex};
 use uuid::Uuid;
 
 pub type Result<T> = std::result::Result<T, AgentError>;
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct ToolAuditEvent {
+    call_id: String,
+    tool_name: String,
+    outcome: String,
+    reason: String,
+    rule_id: Option<String>,
+}
 
 pub struct AgentConfig {
     pub provider: Arc<dyn Provider>,
@@ -99,7 +106,9 @@ impl Agent {
         tokio::spawn(async move {
             while let Some(command) = receiver.recv().await {
                 match command {
-                    Command::Prompt(request) | Command::Steer(request) | Command::FollowUp(request) => {
+                    Command::Prompt(request)
+                    | Command::Steer(request)
+                    | Command::FollowUp(request) => {
                         let _ = runner.handle_request(request).await;
                     }
                     Command::Abort => {
@@ -123,20 +132,33 @@ impl Agent {
 
     async fn current_state_payload(&self) -> serde_json::Value {
         let store = self.config.session_store.lock().await;
+        let audit_events: Vec<serde_json::Value> = store
+            .log
+            .entries
+            .iter()
+            .filter_map(|entry| match &entry.kind {
+                pi_protocol::session::SessionEntryKind::SessionMetadata { payload } => {
+                    payload.get("tool_audit").cloned()
+                }
+                _ => None,
+            })
+            .collect();
+
         json!({
             "head": store.current_head().await,
             "entries": store.log.entries.len(),
             "roots": store.load_tree().0.len(),
             "request_id": Uuid::new_v4().to_string(),
+            "audit_events": audit_events,
         })
     }
 
     pub async fn handle_request(&self, request: ClientRequest) -> Result<Vec<ServerEvent>> {
         let request_id = request.request_id().map(str::to_string);
         let response = match request {
-            ClientRequest::Prompt { .. } | ClientRequest::Steer { .. } | ClientRequest::FollowUp { .. } => {
-                self.handle_turn(request).await
-            }
+            ClientRequest::Prompt { .. }
+            | ClientRequest::Steer { .. }
+            | ClientRequest::FollowUp { .. } => self.handle_turn(request).await,
             ClientRequest::Abort { .. } => {
                 self.request_abort().await;
                 Ok(vec![ServerEvent::State {
@@ -162,10 +184,7 @@ impl Agent {
                 }])
             }
             ClientRequest::NewSession { .. } => Ok(self.new_session().await?),
-            ClientRequest::Unknown {
-                request_type,
-                ..
-            } => Ok(vec![make_error_event(
+            ClientRequest::Unknown { request_type, .. } => Ok(vec![make_error_event(
                 "unsupported_message_type",
                 format!("unsupported request type: {request_type}"),
                 request_id,
@@ -242,7 +261,13 @@ impl Agent {
                 role: "user".to_string(),
                 content: message,
             }],
-            tools: self.config.tool_registry.list().iter().map(|tool| tool.name.clone()).collect(),
+            tools: self
+                .config
+                .tool_registry
+                .list()
+                .iter()
+                .map(|tool| tool.name.clone())
+                .collect(),
             stream: true,
             temperature: 0.2,
             metadata: Default::default(),
@@ -256,7 +281,10 @@ impl Agent {
 
         while let Some(event) = stream.next().await {
             match event {
-                ProviderEvent::TextDelta { text, request_id: _ } => {
+                ProviderEvent::TextDelta {
+                    text,
+                    request_id: _,
+                } => {
                     aggregate.push_str(&text);
                     events.push(ServerEvent::MessageUpdate {
                         v: protocol_version(),
@@ -266,7 +294,10 @@ impl Agent {
                         done: false,
                     });
                 }
-                ProviderEvent::ThinkingDelta { text, request_id: _ } => {
+                ProviderEvent::ThinkingDelta {
+                    text,
+                    request_id: _,
+                } => {
                     aggregate.push_str(&text);
                     events.push(ServerEvent::MessageUpdate {
                         v: protocol_version(),
@@ -313,7 +344,11 @@ impl Agent {
                                 request_id: request_id.clone(),
                                 tool_name: "unknown".to_string(),
                                 call_id,
-                                error: ProtocolErrorPayload::new("tool_call_error", err.to_string(), None),
+                                error: ProtocolErrorPayload::new(
+                                    "tool_call_error",
+                                    err.to_string(),
+                                    None,
+                                ),
                             });
                         }
                     }
@@ -324,7 +359,11 @@ impl Agent {
                 }
                 ProviderEvent::Usage { .. } => {}
                 ProviderEvent::Error { message, .. } => {
-                    events.push(make_error_event("provider_error", message, request_id.clone()));
+                    events.push(make_error_event(
+                        "provider_error",
+                        message,
+                        request_id.clone(),
+                    ));
                     break;
                 }
             }
@@ -374,6 +413,16 @@ impl Agent {
         Ok(events)
     }
 
+    async fn persist_tool_audit_event(&self, event: &ToolAuditEvent) -> Result<()> {
+        let payload = json!({"tool_audit": event});
+        let mut store = self.config.session_store.lock().await;
+        store
+            .append(pi_protocol::session::SessionEntryKind::SessionMetadata { payload })
+            .await
+            .map_err(|err| AgentError::Session(err.to_string()))?;
+        Ok(())
+    }
+
     async fn execute_tool(
         &self,
         name: String,
@@ -387,32 +436,76 @@ impl Agent {
             args,
         };
 
-        let result = self
-            .config
-            .tool_registry
-            .execute(&name, &call, &self.config.tool_policy, &self.config.workspace_root)
-            .map_err(|err| AgentError::Tool(err.to_string()))?;
+        let executed = self.config.tool_registry.execute(
+            &name,
+            &call,
+            &self.config.tool_policy,
+            &self.config.workspace_root,
+        );
 
-        let output_json = serde_json::to_value(&result)
-            .map_err(|err| AgentError::Tool(err.to_string()))?;
+        match executed {
+            Ok(result) => {
+                let output_json = serde_json::to_value(&result)
+                    .map_err(|err| AgentError::Tool(err.to_string()))?;
 
-        {
-            let mut store = self.config.session_store.lock().await;
-            store
-                .append(pi_protocol::session::SessionEntryKind::ToolResult {
+                {
+                    let mut store = self.config.session_store.lock().await;
+                    store
+                        .append(pi_protocol::session::SessionEntryKind::ToolResult {
+                            tool_name: name.clone(),
+                            output: output_json,
+                            success: result.status.as_str() == "ok",
+                        })
+                        .await
+                        .map_err(|err| AgentError::Session(err.to_string()))?;
+                }
+
+                let event = ToolAuditEvent {
+                    call_id: call_id.clone(),
                     tool_name: name.clone(),
-                    output: output_json,
-                    success: result.status.as_str() == "ok",
-                })
-                .await
-                .map_err(|err| AgentError::Session(err.to_string()))?;
-        }
+                    outcome: if result.status.as_str() == "ok" {
+                        "allow".to_string()
+                    } else {
+                        "error".to_string()
+                    },
+                    reason: result
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| "tool execution completed".to_string()),
+                    rule_id: None,
+                };
+                self.persist_tool_audit_event(&event).await?;
 
-        Ok(ToolCallResultOutput {
-            tool_name: name,
-            call_id,
-            result,
-        })
+                Ok(ToolCallResultOutput {
+                    tool_name: name,
+                    call_id,
+                    result,
+                })
+            }
+            Err(err) => {
+                let (outcome, rule_id, reason) =
+                    if let Some((rule_id, message)) = extract_denial_context(&err) {
+                        (
+                            "deny".to_string(),
+                            Some(rule_id.clone()),
+                            format!("[{rule_id}] {message}"),
+                        )
+                    } else {
+                        ("error".to_string(), None, err.to_string())
+                    };
+
+                let event = ToolAuditEvent {
+                    call_id,
+                    tool_name: name,
+                    outcome,
+                    reason: reason.clone(),
+                    rule_id,
+                };
+                self.persist_tool_audit_event(&event).await?;
+
+                Err(AgentError::Tool(reason))
+            }
+        }
     }
 }
 

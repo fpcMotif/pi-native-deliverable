@@ -16,6 +16,26 @@ pub type Result<T> = std::result::Result<T, ToolError>;
 
 pub const DEFAULT_WRITE_LIMIT_BYTES: usize = 4 * 1024 * 1024;
 
+pub const RULE_WORKSPACE_BOUNDARY: &str = "PT001";
+pub const RULE_DENY_WRITE_PATH: &str = "PT002";
+pub const RULE_BINARY_READ_BLOCKED: &str = "PT003";
+pub const RULE_DANGEROUS_COMMAND: &str = "PT004";
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PolicyPreset {
+    Safe,
+    Balanced,
+    Permissive,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyDecision {
+    pub allowed: bool,
+    pub rule_id: String,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
     pub id: String,
@@ -79,8 +99,17 @@ impl ToolRegistry {
         self.tools.insert(tool.name().to_string(), Box::new(tool));
     }
 
-    pub fn execute(&self, name: &str, call: &ToolCall, policy: &Policy, cwd: &Path) -> Result<ToolCallResult> {
-        let tool = self.tools.get(name).ok_or_else(|| ToolError::not_found(name))?;
+    pub fn execute(
+        &self,
+        name: &str,
+        call: &ToolCall,
+        policy: &Policy,
+        cwd: &Path,
+    ) -> Result<ToolCallResult> {
+        let tool = self
+            .tools
+            .get(name)
+            .ok_or_else(|| ToolError::not_found(name))?;
         tool.execute(call, policy, cwd)
     }
 
@@ -114,6 +143,7 @@ impl ToolRegistry {
 
 #[derive(Debug, Clone)]
 pub struct Policy {
+    pub preset: PolicyPreset,
     pub workspace_root: PathBuf,
     pub max_stdout_bytes: usize,
     pub max_stderr_bytes: usize,
@@ -124,7 +154,12 @@ pub struct Policy {
 
 impl Policy {
     pub fn safe_defaults(workspace_root: impl Into<PathBuf>) -> Self {
+        Self::safe(workspace_root)
+    }
+
+    pub fn safe(workspace_root: impl Into<PathBuf>) -> Self {
         Self {
+            preset: PolicyPreset::Safe,
             workspace_root: workspace_root.into(),
             max_stdout_bytes: 32 * 1024,
             max_stderr_bytes: 8 * 1024,
@@ -137,6 +172,34 @@ impl Policy {
                 "id_rsa.pub".to_string(),
             ],
             max_file_size: DEFAULT_WRITE_LIMIT_BYTES,
+        }
+    }
+
+    pub fn balanced(workspace_root: impl Into<PathBuf>) -> Self {
+        Self {
+            preset: PolicyPreset::Balanced,
+            workspace_root: workspace_root.into(),
+            max_stdout_bytes: 64 * 1024,
+            max_stderr_bytes: 16 * 1024,
+            command_timeout_ms: 10_000,
+            deny_write_paths: vec![
+                ".env".to_string(),
+                ".env.local".to_string(),
+                ".bash_history".to_string(),
+            ],
+            max_file_size: DEFAULT_WRITE_LIMIT_BYTES * 2,
+        }
+    }
+
+    pub fn permissive(workspace_root: impl Into<PathBuf>) -> Self {
+        Self {
+            preset: PolicyPreset::Permissive,
+            workspace_root: workspace_root.into(),
+            max_stdout_bytes: 256 * 1024,
+            max_stderr_bytes: 64 * 1024,
+            command_timeout_ms: 30_000,
+            deny_write_paths: Vec::new(),
+            max_file_size: DEFAULT_WRITE_LIMIT_BYTES * 4,
         }
     }
 
@@ -157,26 +220,29 @@ impl Policy {
                 .canonicalize()
                 .map_err(|_| ToolError::invalid("path", "path does not exist"))?;
             if !normalized.starts_with(&workspace_root) {
-                return Err(ToolError::denied(format!(
-                    "path escapes workspace: {}",
-                    normalized.display()
-                )));
+                return Err(ToolError::denied(
+                    RULE_WORKSPACE_BOUNDARY,
+                    format!("path escapes workspace: {}", normalized.display()),
+                ));
             }
             return Ok(normalized);
         }
 
         let parent = requested.parent().unwrap_or(Path::new("."));
         if !parent.exists() {
-            return Err(ToolError::invalid("path", "parent directory does not exist"));
+            return Err(ToolError::invalid(
+                "path",
+                "parent directory does not exist",
+            ));
         }
         let parent = parent
             .canonicalize()
             .map_err(|_| ToolError::invalid("path", "invalid parent path"))?;
         if !parent.starts_with(&workspace_root) {
-            return Err(ToolError::denied(format!(
-                "path escapes workspace: {}",
-                parent.display()
-            )));
+            return Err(ToolError::denied(
+                RULE_WORKSPACE_BOUNDARY,
+                format!("path escapes workspace: {}", parent.display()),
+            ));
         }
 
         let file_name = requested
@@ -186,14 +252,21 @@ impl Policy {
         Ok(parent.join(file_name))
     }
 
-    pub fn can_write_path(&self, path: &Path) -> bool {
-        path.components().any(|component| {
+    pub fn evaluate_write_path(&self, path: &Path) -> Option<PolicyDecision> {
+        let blocked = path.components().any(|component| {
             if let Component::Normal(component) = component {
                 let value = OsStr::to_string_lossy(component);
-                self.deny_write_paths.iter().any(|deny| deny == value.as_ref())
+                self.deny_write_paths
+                    .iter()
+                    .any(|deny| deny == value.as_ref())
             } else {
                 false
             }
+        });
+        blocked.then(|| PolicyDecision {
+            allowed: false,
+            rule_id: RULE_DENY_WRITE_PATH.to_string(),
+            reason: format!("write path blocked by policy preset {:?}", self.preset),
         })
     }
 }
@@ -225,8 +298,8 @@ pub struct LsTool;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ToolError {
-    #[error("tool denied: {0}")]
-    Denied(String),
+    #[error("tool denied [{rule_id}]: {message}")]
+    Denied { rule_id: String, message: String },
     #[error("tool error: {0}")]
     Error(String),
     #[error("tool not found: {0}")]
@@ -238,8 +311,11 @@ pub enum ToolError {
 }
 
 impl ToolError {
-    fn denied(message: impl Into<String>) -> Self {
-        Self::Denied(message.into())
+    fn denied(rule_id: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::Denied {
+            rule_id: rule_id.into(),
+            message: message.into(),
+        }
     }
 
     fn invalid(field: &str, message: impl Into<String>) -> Self {
@@ -248,6 +324,13 @@ impl ToolError {
 
     fn not_found(name: impl Into<String>) -> Self {
         Self::NotFound(name.into())
+    }
+}
+
+pub fn extract_denial_context(error: &ToolError) -> Option<(String, String)> {
+    match error {
+        ToolError::Denied { rule_id, message } => Some((rule_id.clone(), message.clone())),
+        _ => None,
     }
 }
 
@@ -268,7 +351,10 @@ where
     call.args
         .get(name)
         .ok_or_else(|| ToolError::invalid(name, "missing"))
-        .and_then(|value| serde_json::from_value(value.clone()).map_err(|err| ToolError::invalid(name, err.to_string())))
+        .and_then(|value| {
+            serde_json::from_value(value.clone())
+                .map_err(|err| ToolError::invalid(name, err.to_string()))
+        })
 }
 
 impl Tool for ReadTool {
@@ -295,14 +381,20 @@ impl Tool for ReadTool {
 
     fn execute(&self, call: &ToolCall, policy: &Policy, cwd: &Path) -> Result<ToolCallResult> {
         let path = read_arg::<String>(call, "path")?;
-        let max = read_arg::<Option<u64>>(call, "max_bytes")?
+        let max = call
+            .args
+            .get("max_bytes")
+            .and_then(Value::as_u64)
             .unwrap_or(policy.max_file_size as u64) as usize;
 
         let normalized = policy.canonicalize_path(&path, cwd)?;
         let mut bytes = Vec::new();
         fs::File::open(&normalized)?.read_to_end(&mut bytes)?;
         if bytes.iter().any(|byte| *byte == 0) {
-            return Err(ToolError::denied("refusing to read binary file"));
+            return Err(ToolError::denied(
+                RULE_BINARY_READ_BLOCKED,
+                "refusing to read binary file",
+            ));
         }
 
         let (stdout, truncated) = take_max(String::from_utf8_lossy(&bytes).to_string(), max);
@@ -312,7 +404,10 @@ impl Tool for ReadTool {
             error: None,
             truncated,
             metadata: BTreeMap::from_iter([
-                ("path".to_string(), json!(normalized.to_string_lossy().to_string())),
+                (
+                    "path".to_string(),
+                    json!(normalized.to_string_lossy().to_string()),
+                ),
                 ("bytes".to_string(), json!(bytes.len() as u64)),
             ]),
         })
@@ -345,7 +440,11 @@ impl Tool for WriteTool {
     fn execute(&self, call: &ToolCall, policy: &Policy, cwd: &Path) -> Result<ToolCallResult> {
         let path = read_arg::<String>(call, "path")?;
         let content = read_arg::<String>(call, "content")?;
-        let append = call.args.get("append").and_then(Value::as_bool).unwrap_or(false);
+        let append = call
+            .args
+            .get("append")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
 
         if content.len() > policy.max_file_size {
             return Err(ToolError::Error(format!(
@@ -355,8 +454,11 @@ impl Tool for WriteTool {
         }
 
         let normalized = policy.canonicalize_path(&path, cwd)?;
-        if policy.can_write_path(&normalized) {
-            return Err(ToolError::denied(format!("writing denied: {}", normalized.display())));
+        if let Some(decision) = policy.evaluate_write_path(&normalized) {
+            return Err(ToolError::denied(
+                decision.rule_id,
+                format!("{}: {}", decision.reason, normalized.display()),
+            ));
         }
 
         if let Some(parent) = normalized.parent() {
@@ -416,13 +518,15 @@ impl Tool for EditTool {
         let to = read_arg::<String>(call, "to")?;
 
         let normalized = policy.canonicalize_path(&path, cwd)?;
-        if policy.can_write_path(&normalized) {
-            return Err(ToolError::denied(format!("editing denied: {}", normalized.display())));
+        if let Some(decision) = policy.evaluate_write_path(&normalized) {
+            return Err(ToolError::denied(
+                decision.rule_id,
+                format!("{}: {}", decision.reason, normalized.display()),
+            ));
         }
 
-        let mut text = fs::read_to_string(&normalized).map_err(|err| {
-            ToolError::Error(format!("read existing file {}", err))
-        })?;
+        let mut text = fs::read_to_string(&normalized)
+            .map_err(|err| ToolError::Error(format!("read existing file {}", err)))?;
 
         let matches = text.matches(&from).count();
         if matches == 0 {
@@ -475,15 +579,18 @@ impl Tool for BashTool {
     fn execute(&self, call: &ToolCall, policy: &Policy, _cwd: &Path) -> Result<ToolCallResult> {
         let command = read_arg::<String>(call, "command")?;
         if is_dangerous_command(&command) {
-            return Err(ToolError::denied("command blocked by policy"));
+            return Err(ToolError::denied(
+                RULE_DANGEROUS_COMMAND,
+                "command blocked by policy",
+            ));
         }
 
-        let timeout_ms =
-            call.args
-                .get("timeout_ms")
-                .and_then(Value::as_u64)
-                .unwrap_or(policy.command_timeout_ms)
-                .min(policy.command_timeout_ms);
+        let timeout_ms = call
+            .args
+            .get("timeout_ms")
+            .and_then(Value::as_u64)
+            .unwrap_or(policy.command_timeout_ms)
+            .min(policy.command_timeout_ms);
 
         let mut child = Command::new("sh");
         child.arg("-lc").arg(command);
@@ -514,8 +621,8 @@ impl Tool for BashTool {
                 status: ToolStatus::Error,
                 error: Some(format!("bash failed: code {code}: {}", stderr_raw)),
                 truncated,
-                metadata: BTreeMap::from_iter([(
-                    "stderr".to_string(), json!(stderr_raw)),
+                metadata: BTreeMap::from_iter([
+                    ("stderr".to_string(), json!(stderr_raw)),
                     ("exit_code".to_string(), json!(code)),
                 ]),
             })
@@ -556,29 +663,37 @@ impl Tool for FindTool {
     fn execute(&self, call: &ToolCall, _policy: &Policy, _cwd: &Path) -> Result<ToolCallResult> {
         let query = read_arg::<String>(call, "query")?;
         let limit = call.args.get("limit").and_then(Value::as_u64).unwrap_or(50) as usize;
-        let scope = call.args.get("scope").and_then(Value::as_str).map(str::to_string);
+        let scope = call
+            .args
+            .get("scope")
+            .and_then(Value::as_str)
+            .map(str::to_string);
 
         let result = if let Ok(handle) = tokio::runtime::Handle::try_current() {
             tokio::task::block_in_place(move || {
-                handle
-                    .block_on(self.search_service.find_files(&SearchQuery {
-                        text: query,
-                        scope,
-                        filters: vec![],
-                        limit,
-                        token: None,
-                        offset: 0,
-                    }))
+                handle.block_on(self.search_service.find_files(&SearchQuery {
+                    text: query,
+                    scope,
+                    filters: vec![],
+                    limit,
+                    token: None,
+                    offset: 0,
+                }))
             })
             .map_err(|err| ToolError::Error(err.to_string()))?
         } else {
-            return Err(ToolError::Error("tool execution requires tokio runtime".to_string()));
+            return Err(ToolError::Error(
+                "tool execution requires tokio runtime".to_string(),
+            ));
         };
 
         let count = result.items.len();
         let mut out = String::new();
         for item in result.items.iter() {
-            out.push_str(&format!("{} (score {:.3})\n", item.relative_path, item.score));
+            out.push_str(&format!(
+                "{} (score {:.3})\n",
+                item.relative_path, item.score
+            ));
         }
 
         Ok(ToolCallResult {
@@ -621,7 +736,11 @@ impl Tool for GrepTool {
             Some("fuzzy") => GrepMode::Fuzzy,
             _ => GrepMode::PlainText,
         };
-        let scope = call.args.get("scope").and_then(Value::as_str).unwrap_or(".");
+        let scope = call
+            .args
+            .get("scope")
+            .and_then(Value::as_str)
+            .unwrap_or(".");
         let limit = call.args.get("limit").and_then(Value::as_u64).unwrap_or(50) as usize;
 
         let response = if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -630,7 +749,9 @@ impl Tool for GrepTool {
             })
             .map_err(|err| ToolError::Error(err.to_string()))?
         } else {
-            return Err(ToolError::Error("tool execution requires tokio runtime".to_string()));
+            return Err(ToolError::Error(
+                "tool execution requires tokio runtime".to_string(),
+            ));
         };
 
         let lines = response
@@ -740,9 +861,7 @@ fn execute_with_timeout(
         }
 
         if let Some(_status) = child.try_wait().map_err(io::Error::other)? {
-            let out = child
-                .wait_with_output()
-                .map_err(io::Error::other)?;
+            let out = child.wait_with_output().map_err(io::Error::other)?;
             return Ok(Some(out));
         }
 

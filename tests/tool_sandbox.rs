@@ -1,11 +1,8 @@
+use pi_tools::ToolError;
+use pi_tools::{is_dangerous_command, BashTool, Policy, ReadTool, Tool, ToolCall, WriteTool};
 use serde_json::json;
 use std::fs;
 use std::path::Path;
-use pi_tools::{
-    is_dangerous_command,
-    BashTool, Policy, ReadTool, Tool, ToolCall, WriteTool,
-};
-use pi_tools::ToolError;
 
 /// Tool sandbox: deny writing to secrets by default policy.
 #[test]
@@ -27,7 +24,7 @@ fn tool_policy_denies_env_write() {
     };
 
     let res = tool.execute(&call, &policy, tmp.path());
-    assert!(matches!(res, Err(ToolError::Denied(_))));
+    assert!(matches!(res, Err(ToolError::Denied { rule_id, .. }) if rule_id == "PT002"));
 
     assert!(env_path.exists());
     let stored = fs::read_to_string(&env_path).expect("read");
@@ -67,7 +64,13 @@ fn tool_policy_blocks_binary_read() {
     };
 
     let res = tool.execute(&call, &policy, tmp.path());
-    assert!(matches!(res, Err(ToolError::Denied(msg)) if msg.contains("binary")));
+    match res {
+        Err(ToolError::Denied { rule_id, message }) => {
+            assert_eq!(rule_id, "PT003");
+            assert!(message.contains("binary"));
+        }
+        other => panic!("expected binary-read denial, got {other:?}"),
+    }
 }
 
 #[test]
@@ -83,7 +86,7 @@ fn bash_dangerous_command_is_blocked() {
     };
 
     let res = tool.execute(&call, &policy, Path::new("/tmp"));
-    assert!(matches!(res, Err(ToolError::Denied(_))));
+    assert!(matches!(res, Err(ToolError::Denied { rule_id, .. }) if rule_id == "PT004"));
 }
 
 #[test]
@@ -92,3 +95,18 @@ fn bash_dangerous_command_detector_is_stable() {
     assert!(is_dangerous_command("mkfs /dev/sda"));
     assert!(is_dangerous_command(":(){ :|:& };:"));
     assert!(!is_dangerous_command("echo safe"));
+}
+
+#[test]
+fn policy_presets_are_named_and_distinct() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let safe = Policy::safe(tmp.path());
+    let balanced = Policy::balanced(tmp.path());
+    let permissive = Policy::permissive(tmp.path());
+
+    assert_eq!(safe.preset, pi_tools::PolicyPreset::Safe);
+    assert_eq!(balanced.preset, pi_tools::PolicyPreset::Balanced);
+    assert_eq!(permissive.preset, pi_tools::PolicyPreset::Permissive);
+    assert!(!safe.deny_write_paths.is_empty());
+    assert!(permissive.deny_write_paths.is_empty());
+}
