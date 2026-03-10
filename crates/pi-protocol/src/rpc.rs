@@ -588,11 +588,14 @@ mod tests {
         let result = parse_client_request("[]");
         assert!(result.is_err());
 
-        match result.unwrap_err() {
-            ProtocolError::InvalidPayload(msg) => {
-                assert_eq!(msg, "request is not an object");
-            }
-            err => panic!("Expected ProtocolError::InvalidPayload, got: {:?}", err),
+        match result {
+            Err(err) => match err {
+                ProtocolError::InvalidPayload(msg) => {
+                    assert_eq!(msg, "request is not an object");
+                }
+                err => panic!("Expected ProtocolError::InvalidPayload, got: {:?}", err),
+            },
+            Ok(_) => panic!("Expected error"),
         }
     }
 
@@ -601,9 +604,12 @@ mod tests {
         let result = parse_client_request("{");
         assert!(result.is_err());
 
-        match result.unwrap_err() {
-            ProtocolError::Json(_) => {}
-            err => panic!("Expected ProtocolError::Json, got: {:?}", err),
+        match result {
+            Err(err) => match err {
+                ProtocolError::Json(_) => {}
+                err => panic!("Expected ProtocolError::Json, got: {:?}", err),
+            },
+            Ok(_) => panic!("Expected error"),
         }
     }
 
@@ -617,7 +623,7 @@ mod tests {
         };
 
         let result = to_jsonl_value(&event);
-        let parsed: Value = serde_json::from_str(&result).unwrap();
+        let parsed: Value = serde_json::from_str(&result).expect("Failed to parse JSON value");
 
         assert_eq!(parsed["type"], "ready");
         assert_eq!(parsed["v"], PROTOCOL_VERSION);
@@ -637,7 +643,7 @@ mod tests {
         };
 
         let result = to_jsonl_value(&event);
-        let parsed: Value = serde_json::from_str(&result).unwrap();
+        let parsed: Value = serde_json::from_str(&result).expect("Failed to parse JSON value");
 
         assert_eq!(parsed["type"], "error");
         assert_eq!(parsed["v"], PROTOCOL_VERSION);
@@ -653,7 +659,7 @@ mod tests {
         };
 
         let result = to_jsonl_value(&event);
-        let parsed: Value = serde_json::from_str(&result).unwrap();
+        let parsed: Value = serde_json::from_str(&result).expect("Failed to parse JSON value");
 
         assert_eq!(parsed["type"], "turn_start");
         assert_eq!(parsed["v"], PROTOCOL_VERSION);
@@ -670,7 +676,7 @@ mod tests {
         };
 
         let result = to_jsonl_value(&event);
-        let parsed: Value = serde_json::from_str(&result).unwrap();
+        let parsed: Value = serde_json::from_str(&result).expect("Failed to parse JSON value");
 
         assert_eq!(parsed["type"], "message_update");
         assert_eq!(parsed["v"], PROTOCOL_VERSION);
