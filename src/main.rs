@@ -4,13 +4,15 @@ use clap::{Parser, Subcommand, ValueEnum};
 use pi_core::{run_rpc, Agent, AgentConfig};
 use pi_llm::{MockProvider, Provider};
 use pi_protocol::{parse_client_request, protocol_version, to_json_line, ServerEvent};
+use pi_search::{SearchService, SearchServiceConfig};
 use pi_session::SessionStore;
 use pi_tools::{default_registry, Policy};
-use pi_search::{SearchService, SearchServiceConfig};
 use std::io::{self, Write};
 use std::path::PathBuf;
-use tokio::io::{self as tokio_io, AsyncBufReadExt};
+use tokio::io::{self as tokio_io, AsyncWriteExt};
 use uuid::Uuid;
+
+mod ui;
 
 #[derive(Parser, Debug)]
 #[command(name = "pi", about = "pi agent runtime")]
@@ -72,7 +74,9 @@ async fn main() {
         return;
     }
 
-    let workspace = cli.workspace.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+    let workspace = cli
+        .workspace
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
     let line_limit = cli.line_limit.unwrap_or(1024 * 1024);
 
     let provider = build_provider(&cli.provider).await;
@@ -138,13 +142,14 @@ async fn main() {
                 let _ = writeln!(io::stdout(), "missing --prompt in print mode");
             }
         }
-        Mode::Interactive => run_interactive(agent).await,
+        Mode::Interactive => ui::run_interactive_ui(std::sync::Arc::new(agent)).await,
     }
 }
 
-async fn run_protocol_schema(out: PathBuf) {
+async fn run_protocol_schema(_out: PathBuf) {
     #[cfg(feature = "protocol-schema")]
     {
+        let out = _out;
         if let Some(parent) = out.parent() {
             let _ = tokio::fs::create_dir_all(parent).await;
         }
@@ -159,11 +164,10 @@ async fn run_protocol_schema(out: PathBuf) {
 
     #[cfg(not(feature = "protocol-schema"))]
     {
-        let _ = tokio_io::write_all(
-            &mut tokio_io::stdout(),
-            b"{\"error\":\"protocol-schema feature is disabled\"}",
-        )
-        .await;
+        let mut out = tokio_io::stdout();
+        let _ = out
+            .write_all(b"{\"error\":\"protocol-schema feature is disabled\"}")
+            .await;
     }
 }
 
@@ -172,62 +176,6 @@ async fn print_events_to_stdout(events: &[ServerEvent]) {
         if let Ok(line) = to_json_line(event) {
             let _ = io::stdout().write_all(line.as_bytes());
         }
-    }
-}
-
-async fn run_interactive(agent: Agent) {
-    let mut out = io::stdout();
-    let mut lines = tokio_io::BufReader::new(tokio_io::stdin()).lines();
-    loop {
-        let _ = out.write_all(b"> ");
-        let _ = out.flush();
-
-        let line = match lines.next_line().await {
-            Ok(Some(value)) => value,
-            Ok(None) => break,
-            Err(_) => break,
-        };
-
-        if line == "/exit" {
-            break;
-        }
-        if line.trim().is_empty() {
-            continue;
-        }
-
-        let request = match parse_client_request(&serde_json::json!({
-            "v": protocol_version(),
-            "type": "prompt",
-            "id": Uuid::new_v4().to_string(),
-            "message": line,
-        })
-        .to_string())
-        {
-            Ok(value) => value,
-            Err(err) => {
-                let _ = out.write_all(format!("parse error: {err}\n").as_bytes());
-                continue;
-            }
-        };
-
-        match agent.handle_request(request).await {
-            Ok(events) => {
-                for event in events {
-                    if let ServerEvent::MessageUpdate { delta, done: false, .. } = event {
-                        let _ = out.write_all(delta.as_bytes());
-                    } else if let ServerEvent::MessageUpdate { done: true, .. } = event {
-                        let _ = out.write_all(b"\n");
-                    } else if let Ok(line) = to_json_line(&event) {
-                        let _ = out.write_all(line.as_bytes());
-                    }
-                }
-            }
-            Err(err) => {
-                let _ = out.write_all(format!("agent error: {err}\n").as_bytes());
-            }
-        }
-
-        let _ = out.flush();
     }
 }
 

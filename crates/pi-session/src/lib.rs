@@ -42,6 +42,10 @@ pub struct SessionStore {
 }
 
 impl SessionStore {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     pub fn default_session_path(workspace_root: impl AsRef<Path>) -> PathBuf {
         workspace_root.as_ref().join(".pi").join("session.jsonl")
     }
@@ -65,7 +69,7 @@ impl SessionStore {
         if !normalized.starts_with(&workspace_root) {
             return Err(SessionError::InvalidPath(
                 "session path is outside workspace".to_string(),
-        ));
+            ));
         }
 
         if let Some(parent) = normalized.parent() {
@@ -94,7 +98,8 @@ impl SessionStore {
                 match serde_json::from_str::<SessionEntry>(raw) {
                     Ok(value) => entries.push(value),
                     Err(parse_err) => {
-                        let legacy = serde_json::from_str::<LegacyLog>(raw).map_err(|_| parse_err)?;
+                        let legacy =
+                            serde_json::from_str::<LegacyLog>(raw).map_err(|_| parse_err)?;
                         entries.extend(legacy.entries);
                     }
                 }
@@ -133,7 +138,10 @@ impl SessionStore {
             if !self.entry_by_id.contains_key(&parent_id) {
                 return Err(SessionError::MissingEntry(parent_id.to_string()));
             }
-            self.children.entry(parent_id).or_default().push(entry.entry_id);
+            self.children
+                .entry(parent_id)
+                .or_default()
+                .push(entry.entry_id);
         } else {
             self.roots.push(entry.entry_id);
         }
@@ -154,7 +162,10 @@ impl SessionStore {
         self.entry_by_id.insert(id, self.log.entries.len() - 1);
         self.head_id = Some(id);
 
-        let mut file = OpenOptions::new().append(true).create(true).open(&self.path)?;
+        let mut file = OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&self.path)?;
         serde_json::to_writer(&mut file, &self.log.entries.last().expect("entry"))?;
         file.write_all(b"\n")?;
         Ok(id)
@@ -229,7 +240,12 @@ impl SessionStore {
     }
 
     pub fn to_text_summary(&self) -> String {
-        format!("entries={} roots={} head={:?}", self.log.entries.len(), self.roots.len(), self.head_id)
+        format!(
+            "entries={} roots={} head={:?}",
+            self.log.entries.len(),
+            self.roots.len(),
+            self.head_id
+        )
     }
 
     pub fn to_jsonl_string(&self) -> Result<String> {
@@ -273,6 +289,16 @@ impl SessionStore {
         Ok(())
     }
 
+    pub async fn reload_from_disk(&mut self) -> Result<()> {
+        let reloaded = Self::load(self.path.clone()).await?;
+        self.log = reloaded.log;
+        self.entry_by_id = reloaded.entry_by_id;
+        self.children = reloaded.children;
+        self.roots = reloaded.roots;
+        self.head_id = reloaded.head_id;
+        Ok(())
+    }
+
     pub fn rebuild_index(&mut self) {
         self.entry_by_id.clear();
         self.children.clear();
@@ -282,7 +308,10 @@ impl SessionStore {
         for (index, entry) in self.log.entries.iter().enumerate() {
             if let Some(parent_id) = entry.parent_id {
                 parents.insert(parent_id);
-                self.children.entry(parent_id).or_default().push(entry.entry_id);
+                self.children
+                    .entry(parent_id)
+                    .or_default()
+                    .push(entry.entry_id);
             }
             self.entry_by_id.insert(entry.entry_id, index);
         }
