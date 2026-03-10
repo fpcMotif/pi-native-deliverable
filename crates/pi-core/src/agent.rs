@@ -2,15 +2,14 @@
 
 use futures::StreamExt;
 use pi_llm::{CompletionMessage, CompletionRequest, Provider, ProviderEvent};
-use pi_protocol::{
-    make_error_event, protocol_version, ProtocolErrorPayload, ServerEvent,
-};
 use pi_protocol::rpc::ClientRequest;
+use pi_protocol::{make_error_event, protocol_version, ProtocolErrorPayload, ServerEvent};
 use pi_session::SessionStore;
 use pi_tools::{ToolCall, ToolCallResult, ToolRegistry};
 use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::{mpsc, Mutex};
 use uuid::Uuid;
 
@@ -70,6 +69,29 @@ pub enum AgentError {
     State(String),
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+struct UsageTotals {
+    input_tokens: u64,
+    output_tokens: u64,
+    cached_tokens: u64,
+    cost_usd: f64,
+}
+
+impl UsageTotals {
+    fn add_usage(
+        &mut self,
+        input_tokens: u32,
+        output_tokens: u32,
+        cached_tokens: u32,
+        cost_usd: f64,
+    ) {
+        self.input_tokens += input_tokens as u64;
+        self.output_tokens += output_tokens as u64;
+        self.cached_tokens += cached_tokens as u64;
+        self.cost_usd += cost_usd;
+    }
+}
+
 impl std::fmt::Display for AgentError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -99,7 +121,9 @@ impl Agent {
         tokio::spawn(async move {
             while let Some(command) = receiver.recv().await {
                 match command {
-                    Command::Prompt(request) | Command::Steer(request) | Command::FollowUp(request) => {
+                    Command::Prompt(request)
+                    | Command::Steer(request)
+                    | Command::FollowUp(request) => {
                         let _ = runner.handle_request(request).await;
                     }
                     Command::Abort => {
@@ -134,9 +158,9 @@ impl Agent {
     pub async fn handle_request(&self, request: ClientRequest) -> Result<Vec<ServerEvent>> {
         let request_id = request.request_id().map(str::to_string);
         let response = match request {
-            ClientRequest::Prompt { .. } | ClientRequest::Steer { .. } | ClientRequest::FollowUp { .. } => {
-                self.handle_turn(request).await
-            }
+            ClientRequest::Prompt { .. }
+            | ClientRequest::Steer { .. }
+            | ClientRequest::FollowUp { .. } => self.handle_turn(request).await,
             ClientRequest::Abort { .. } => {
                 self.request_abort().await;
                 Ok(vec![ServerEvent::State {
@@ -162,10 +186,7 @@ impl Agent {
                 }])
             }
             ClientRequest::NewSession { .. } => Ok(self.new_session().await?),
-            ClientRequest::Unknown {
-                request_type,
-                ..
-            } => Ok(vec![make_error_event(
+            ClientRequest::Unknown { request_type, .. } => Ok(vec![make_error_event(
                 "unsupported_message_type",
                 format!("unsupported request type: {request_type}"),
                 request_id,
@@ -242,11 +263,22 @@ impl Agent {
                 role: "user".to_string(),
                 content: message,
             }],
-            tools: self.config.tool_registry.list().iter().map(|tool| tool.name.clone()).collect(),
+            tools: self
+                .config
+                .tool_registry
+                .list()
+                .iter()
+                .map(|tool| tool.name.clone())
+                .collect(),
             stream: true,
             temperature: 0.2,
             metadata: Default::default(),
         };
+        let turn_started_at = Instant::now();
+        let provider_name = self.config.provider.name().to_string();
+        let model_name = completion.model.clone();
+        let mut turn_usage = UsageTotals::default();
+        let mut session_usage = self.session_usage_totals().await?;
 
         let mut aggregate = String::new();
         let mut stream = self.config.provider.stream(completion, request_id.clone());
@@ -256,7 +288,10 @@ impl Agent {
 
         while let Some(event) = stream.next().await {
             match event {
-                ProviderEvent::TextDelta { text, request_id: _ } => {
+                ProviderEvent::TextDelta {
+                    text,
+                    request_id: _,
+                } => {
                     aggregate.push_str(&text);
                     events.push(ServerEvent::MessageUpdate {
                         v: protocol_version(),
@@ -266,7 +301,10 @@ impl Agent {
                         done: false,
                     });
                 }
-                ProviderEvent::ThinkingDelta { text, request_id: _ } => {
+                ProviderEvent::ThinkingDelta {
+                    text,
+                    request_id: _,
+                } => {
                     aggregate.push_str(&text);
                     events.push(ServerEvent::MessageUpdate {
                         v: protocol_version(),
@@ -313,7 +351,11 @@ impl Agent {
                                 request_id: request_id.clone(),
                                 tool_name: "unknown".to_string(),
                                 call_id,
-                                error: ProtocolErrorPayload::new("tool_call_error", err.to_string(), None),
+                                error: ProtocolErrorPayload::new(
+                                    "tool_call_error",
+                                    err.to_string(),
+                                    None,
+                                ),
                             });
                         }
                     }
@@ -322,9 +364,30 @@ impl Agent {
                     aggregate.push_str(&format!("\n[done:{stop_reason}]"));
                     break;
                 }
-                ProviderEvent::Usage { .. } => {}
+                ProviderEvent::Usage {
+                    input_tokens,
+                    output_tokens,
+                    cached_tokens,
+                    cost_usd,
+                    ..
+                } => {
+                    turn_usage.add_usage(input_tokens, output_tokens, cached_tokens, cost_usd);
+                    session_usage.add_usage(input_tokens, output_tokens, cached_tokens, cost_usd);
+                    self.append_usage_metadata(
+                        &provider_name,
+                        &model_name,
+                        turn_started_at.elapsed().as_millis() as u64,
+                        turn_usage,
+                        session_usage,
+                    )
+                    .await?;
+                }
                 ProviderEvent::Error { message, .. } => {
-                    events.push(make_error_event("provider_error", message, request_id.clone()));
+                    events.push(make_error_event(
+                        "provider_error",
+                        message,
+                        request_id.clone(),
+                    ));
                     break;
                 }
             }
@@ -374,6 +437,79 @@ impl Agent {
         Ok(events)
     }
 
+    async fn append_usage_metadata(
+        &self,
+        provider: &str,
+        model: &str,
+        elapsed_ms: u64,
+        turn_usage: UsageTotals,
+        session_usage: UsageTotals,
+    ) -> Result<()> {
+        let mut store = self.config.session_store.lock().await;
+        store
+            .append(pi_protocol::session::SessionEntryKind::SessionMetadata {
+                payload: json!({
+                    "type": "usage",
+                    "provider": provider,
+                    "model": model,
+                    "timing": {
+                        "turn_elapsed_ms": elapsed_ms,
+                    },
+                    "token": {
+                        "turn": {
+                            "input": turn_usage.input_tokens,
+                            "output": turn_usage.output_tokens,
+                            "cached": turn_usage.cached_tokens,
+                        },
+                        "session": {
+                            "input": session_usage.input_tokens,
+                            "output": session_usage.output_tokens,
+                            "cached": session_usage.cached_tokens,
+                        }
+                    },
+                    "cost": {
+                        "turn_usd": turn_usage.cost_usd,
+                        "session_usd": session_usage.cost_usd,
+                    }
+                }),
+            })
+            .await
+            .map_err(|err| AgentError::Session(err.to_string()))?;
+        Ok(())
+    }
+
+    async fn session_usage_totals(&self) -> Result<UsageTotals> {
+        let store = self.config.session_store.lock().await;
+        let mut totals = UsageTotals::default();
+        for entry in &store.log.entries {
+            let pi_protocol::session::SessionEntryKind::SessionMetadata { payload } = &entry.kind
+            else {
+                continue;
+            };
+            if payload.get("type").and_then(serde_json::Value::as_str) != Some("usage") {
+                continue;
+            }
+            let session = &payload["token"]["session"];
+            let input = session.get("input").and_then(serde_json::Value::as_u64);
+            let output = session.get("output").and_then(serde_json::Value::as_u64);
+            let cached = session.get("cached").and_then(serde_json::Value::as_u64);
+            let cost = payload["cost"]
+                .get("session_usd")
+                .and_then(serde_json::Value::as_f64);
+            if let (Some(input), Some(output), Some(cached), Some(cost)) =
+                (input, output, cached, cost)
+            {
+                totals = UsageTotals {
+                    input_tokens: input,
+                    output_tokens: output,
+                    cached_tokens: cached,
+                    cost_usd: cost,
+                };
+            }
+        }
+        Ok(totals)
+    }
+
     async fn execute_tool(
         &self,
         name: String,
@@ -390,11 +526,16 @@ impl Agent {
         let result = self
             .config
             .tool_registry
-            .execute(&name, &call, &self.config.tool_policy, &self.config.workspace_root)
+            .execute(
+                &name,
+                &call,
+                &self.config.tool_policy,
+                &self.config.workspace_root,
+            )
             .map_err(|err| AgentError::Tool(err.to_string()))?;
 
-        let output_json = serde_json::to_value(&result)
-            .map_err(|err| AgentError::Tool(err.to_string()))?;
+        let output_json =
+            serde_json::to_value(&result).map_err(|err| AgentError::Tool(err.to_string()))?;
 
         {
             let mut store = self.config.session_store.lock().await;
@@ -420,4 +561,128 @@ struct ToolCallResultOutput {
     tool_name: String,
     call_id: String,
     result: ToolCallResult,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::stream::{self, BoxStream};
+    use pi_llm::{CompletionRequest, ModelCard};
+    use pi_protocol::rpc::ClientRequest;
+
+    #[derive(Debug)]
+    struct UsageProvider;
+
+    #[async_trait::async_trait]
+    impl Provider for UsageProvider {
+        fn name(&self) -> &'static str {
+            "usage-mock"
+        }
+
+        async fn list_models(&self) -> pi_llm::Result<Vec<ModelCard>> {
+            Ok(vec![ModelCard {
+                id: "usage-model".to_string(),
+                provider: self.name().to_string(),
+                context_window: None,
+            }])
+        }
+
+        fn stream(
+            &self,
+            _request: CompletionRequest,
+            request_id: Option<String>,
+        ) -> BoxStream<'static, ProviderEvent> {
+            Box::pin(stream::iter(vec![
+                ProviderEvent::TextDelta {
+                    request_id: request_id.clone(),
+                    text: "hello".to_string(),
+                },
+                ProviderEvent::Usage {
+                    request_id: request_id.clone(),
+                    input_tokens: 10,
+                    output_tokens: 5,
+                    cached_tokens: 2,
+                    cost_usd: 0.01,
+                },
+                ProviderEvent::Usage {
+                    request_id,
+                    input_tokens: 1,
+                    output_tokens: 4,
+                    cached_tokens: 0,
+                    cost_usd: 0.02,
+                },
+                ProviderEvent::Done {
+                    request_id: None,
+                    stop_reason: "complete".to_string(),
+                },
+            ]))
+        }
+    }
+
+    fn temp_session_path() -> PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("pi-agent-usage-test-{}.jsonl", Uuid::new_v4()));
+        if path.exists() {
+            let _ = std::fs::remove_file(&path);
+        }
+        path
+    }
+
+    #[tokio::test]
+    async fn usage_events_append_session_metadata_with_turn_and_session_totals() {
+        let session_path = temp_session_path();
+        let session_store = SessionStore::new(&session_path)
+            .await
+            .expect("session store");
+
+        let agent = Agent::new(AgentConfig {
+            provider: Arc::new(UsageProvider),
+            tool_registry: ToolRegistry::new(),
+            tool_policy: pi_tools::Policy::safe_defaults(std::env::temp_dir()),
+            session_store: Arc::new(Mutex::new(session_store)),
+            workspace_root: std::env::temp_dir(),
+            default_provider_model: "usage-model".to_string(),
+            line_limit: 4000,
+        })
+        .await;
+
+        let request = ClientRequest::Prompt {
+            v: protocol_version(),
+            id: Some("req-1".to_string()),
+            message: "count usage".to_string(),
+            attachments: None,
+        };
+
+        let _ = agent.handle_request(request).await.expect("request");
+
+        let store = agent.config.session_store.lock().await;
+        let usage_entries: Vec<_> = store
+            .log
+            .entries
+            .iter()
+            .filter_map(|entry| {
+                let pi_protocol::session::SessionEntryKind::SessionMetadata { payload } =
+                    &entry.kind
+                else {
+                    return None;
+                };
+                (payload.get("type").and_then(serde_json::Value::as_str) == Some("usage"))
+                    .then_some(payload)
+            })
+            .collect();
+
+        assert_eq!(usage_entries.len(), 2);
+        assert_eq!(usage_entries[0]["provider"], "usage-mock");
+        assert_eq!(usage_entries[0]["model"], "usage-model");
+        assert_eq!(usage_entries[0]["token"]["turn"]["input"], 10);
+        assert_eq!(usage_entries[0]["token"]["session"]["input"], 10);
+        assert_eq!(usage_entries[1]["token"]["turn"]["input"], 11);
+        assert_eq!(usage_entries[1]["token"]["turn"]["output"], 9);
+        assert_eq!(usage_entries[1]["token"]["session"]["input"], 11);
+        assert_eq!(usage_entries[1]["token"]["session"]["cached"], 2);
+        assert_eq!(usage_entries[1]["cost"]["turn_usd"], 0.03);
+        assert_eq!(usage_entries[1]["cost"]["session_usd"], 0.03);
+
+        let _ = std::fs::remove_file(&session_path);
+    }
 }

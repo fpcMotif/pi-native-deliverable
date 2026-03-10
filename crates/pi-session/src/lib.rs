@@ -65,7 +65,7 @@ impl SessionStore {
         if !normalized.starts_with(&workspace_root) {
             return Err(SessionError::InvalidPath(
                 "session path is outside workspace".to_string(),
-        ));
+            ));
         }
 
         if let Some(parent) = normalized.parent() {
@@ -94,7 +94,8 @@ impl SessionStore {
                 match serde_json::from_str::<SessionEntry>(raw) {
                     Ok(value) => entries.push(value),
                     Err(parse_err) => {
-                        let legacy = serde_json::from_str::<LegacyLog>(raw).map_err(|_| parse_err)?;
+                        let legacy =
+                            serde_json::from_str::<LegacyLog>(raw).map_err(|_| parse_err)?;
                         entries.extend(legacy.entries);
                     }
                 }
@@ -133,7 +134,10 @@ impl SessionStore {
             if !self.entry_by_id.contains_key(&parent_id) {
                 return Err(SessionError::MissingEntry(parent_id.to_string()));
             }
-            self.children.entry(parent_id).or_default().push(entry.entry_id);
+            self.children
+                .entry(parent_id)
+                .or_default()
+                .push(entry.entry_id);
         } else {
             self.roots.push(entry.entry_id);
         }
@@ -154,7 +158,10 @@ impl SessionStore {
         self.entry_by_id.insert(id, self.log.entries.len() - 1);
         self.head_id = Some(id);
 
-        let mut file = OpenOptions::new().append(true).create(true).open(&self.path)?;
+        let mut file = OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&self.path)?;
         serde_json::to_writer(&mut file, &self.log.entries.last().expect("entry"))?;
         file.write_all(b"\n")?;
         Ok(id)
@@ -229,7 +236,12 @@ impl SessionStore {
     }
 
     pub fn to_text_summary(&self) -> String {
-        format!("entries={} roots={} head={:?}", self.log.entries.len(), self.roots.len(), self.head_id)
+        format!(
+            "entries={} roots={} head={:?}",
+            self.log.entries.len(),
+            self.roots.len(),
+            self.head_id
+        )
     }
 
     pub fn to_jsonl_string(&self) -> Result<String> {
@@ -282,7 +294,10 @@ impl SessionStore {
         for (index, entry) in self.log.entries.iter().enumerate() {
             if let Some(parent_id) = entry.parent_id {
                 parents.insert(parent_id);
-                self.children.entry(parent_id).or_default().push(entry.entry_id);
+                self.children
+                    .entry(parent_id)
+                    .or_default()
+                    .push(entry.entry_id);
             }
             self.entry_by_id.insert(entry.entry_id, index);
         }
@@ -353,4 +368,45 @@ fn normalize_path(path: &Path) -> PathBuf {
 #[derive(Debug, Serialize, serde::Deserialize)]
 struct LegacyLog {
     pub entries: Vec<SessionEntry>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn session_store_roundtrip_preserves_usage_metadata_payload() {
+        let path = std::env::temp_dir().join(format!("pi-session-usage-{}.jsonl", Uuid::new_v4()));
+        if path.exists() {
+            let _ = fs::remove_file(&path);
+        }
+
+        let mut store = SessionStore::new(&path).await.expect("create");
+        store
+            .append(SessionEntryKind::SessionMetadata {
+                payload: serde_json::json!({
+                    "type": "usage",
+                    "provider": "mock",
+                    "model": "gpt-test",
+                    "timing": {"turn_elapsed_ms": 7},
+                    "token": {
+                        "turn": {"input": 3, "output": 5, "cached": 1},
+                        "session": {"input": 8, "output": 13, "cached": 2}
+                    },
+                    "cost": {"turn_usd": 0.002, "session_usd": 0.009}
+                }),
+            })
+            .await
+            .expect("append");
+
+        let reloaded = SessionStore::load(&path).await.expect("reload");
+        let serialized = reloaded.to_jsonl_string().expect("serialize");
+        assert!(serialized.contains("\"provider\":\"mock\""));
+        assert!(serialized.contains("\"model\":\"gpt-test\""));
+        assert!(serialized.contains("\"timing\":{\"turn_elapsed_ms\":7}"));
+        assert!(serialized.contains("\"token\":{\"session\":{\"cached\":2,\"input\":8,\"output\":13},\"turn\":{\"cached\":1,\"input\":3,\"output\":5}}"));
+        assert!(serialized.contains("\"cost\":{\"session_usd\":0.009,\"turn_usd\":0.002}"));
+
+        let _ = fs::remove_file(path);
+    }
 }

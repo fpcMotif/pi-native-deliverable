@@ -170,7 +170,9 @@ fn canonicalize_json_value(value: Value) -> Value {
             }
             Value::Object(sorted)
         }
-        Value::Array(items) => Value::Array(items.into_iter().map(canonicalize_json_value).collect()),
+        Value::Array(items) => {
+            Value::Array(items.into_iter().map(canonicalize_json_value).collect())
+        }
         other => other,
     }
 }
@@ -179,7 +181,13 @@ pub fn summarize_entries(entries: &[SessionEntry]) -> String {
     let mut out = String::new();
     let _ = writeln!(&mut out, "entries={}", entries.len());
     for (idx, entry) in entries.iter().enumerate() {
-        let _ = writeln!(&mut out, "{} {} {}", idx, entry.entry_id, display_entry_kind(&entry.kind));
+        let _ = writeln!(
+            &mut out,
+            "{} {} {}",
+            idx,
+            entry.entry_id,
+            display_entry_kind(&entry.kind)
+        );
     }
     out
 }
@@ -205,4 +213,20 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_preserves_usage_metadata_fields() {
+        let raw = r#"{"entry_id":"00000000-0000-0000-0000-000000000001","kind":{"kind":"session_metadata","payload":{"model":"gpt-test","provider":"mock","timing":{"turn_elapsed_ms":42},"token":{"turn":{"input":11,"output":9,"cached":1},"session":{"input":11,"output":9,"cached":1}},"cost":{"turn_usd":0.01,"session_usd":0.01},"type":"usage"}},"metadata":null,"parent_id":null,"schema_version":"1.0","timestamp_ms":1}"#;
+        let normalized = normalize_jsonl(raw).expect("normalize");
+        assert!(normalized.contains("\"provider\":\"mock\""));
+        assert!(normalized.contains("\"model\":\"gpt-test\""));
+        assert!(normalized.contains("\"timing\":{\"turn_elapsed_ms\":42}"));
+        assert!(normalized.contains("\"token\":{\"session\":{\"cached\":1,\"input\":11,\"output\":9},\"turn\":{\"cached\":1,\"input\":11,\"output\":9}}"));
+        assert!(normalized.contains("\"cost\":{\"session_usd\":0.01,\"turn_usd\":0.01}"));
+    }
 }
