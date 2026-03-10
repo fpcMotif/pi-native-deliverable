@@ -341,7 +341,9 @@ impl SearchService {
                             }
                             if service.config.use_git_status {
                                 if let Err(err) = service.refresh_git_status().await {
-                                    eprintln!("pi-search: watcher refresh_git_status failed: {err}");
+                                    eprintln!(
+                                        "pi-search: watcher refresh_git_status failed: {err}"
+                                    );
                                 }
                             }
                         }
@@ -917,4 +919,3 @@ pub fn decode_token(token: &str) -> SearchResult<usize> {
         .try_into()
         .map_err(|_| SearchError::InvalidToken("token overflow".to_string()))?)
 }
-
