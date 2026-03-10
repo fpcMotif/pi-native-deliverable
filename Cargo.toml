@@ -50,6 +50,8 @@ pi-search = { path = "crates/pi-search" }
 pi-llm = { path = "crates/pi-llm", default-features = false, features = ["openai"] }
 serde_json.workspace = true
 uuid.workspace = true
+serde.workspace = true
+thiserror.workspace = true
 
 [features]
 default = ["mock-llm", "openai"]
