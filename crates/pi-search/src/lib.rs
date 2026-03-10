@@ -32,18 +32,13 @@ pub struct SearchFilter {
     pub extension: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum GrepMode {
+    #[default]
     PlainText,
     Regex,
     Fuzzy,
-}
-
-impl Default for GrepMode {
-    fn default() -> Self {
-        Self::PlainText
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -666,7 +661,7 @@ impl SearchService {
 }
 
 fn matches_scope(entry: &IndexedFile, scope: Option<&str>) -> bool {
-    scope.is_none_or(|scope| scope_is_prefix(&entry.relative_path, scope))
+    scope.map_or(true, |scope| scope_is_prefix(&entry.relative_path, scope))
 }
 
 fn matches_filters(entry: &IndexedFile, filters: &[SearchFilter], query: &str) -> bool {
@@ -678,11 +673,11 @@ fn matches_filters(entry: &IndexedFile, filters: &[SearchFilter], query: &str) -
         let ext_ok = filter
             .extension
             .as_ref()
-            .is_none_or(|ext| entry.relative_path.ends_with(&format!(".{ext}")));
+            .map_or(true, |ext| entry.relative_path.ends_with(&format!(".{ext}")));
         let scope_ok = filter
             .path_prefix
             .as_ref()
-            .is_none_or(|prefix| scope_is_prefix(&entry.relative_path, prefix));
+            .map_or(true, |prefix| scope_is_prefix(&entry.relative_path, prefix));
         if !ext_ok || !scope_ok {
             return false;
         }
@@ -915,7 +910,7 @@ pub fn decode_token(token: &str) -> SearchResult<usize> {
             .try_into()
             .map_err(|_| SearchError::InvalidToken("invalid token payload".to_string()))?,
     );
-    Ok(value
+    value
         .try_into()
-        .map_err(|_| SearchError::InvalidToken("token overflow".to_string()))?)
+        .map_err(|_| SearchError::InvalidToken("token overflow".to_string()))
 }
