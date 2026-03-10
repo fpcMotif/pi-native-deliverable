@@ -944,23 +944,44 @@ fn execute_with_timeout(
     mut command: Command,
     timeout_ms: u64,
 ) -> Result<Option<std::process::Output>> {
-    let timeout = Duration::from_millis(timeout_ms);
-    let child = command.spawn();
-    let mut child = child.map_err(io::Error::other)?;
+    command.stdout(std::process::Stdio::piped());
+    command.stderr(std::process::Stdio::piped());
+    let child = command.spawn().map_err(io::Error::other)?;
+    let (tx, rx) = std::sync::mpsc::channel();
 
-    let start = std::time::Instant::now();
-    loop {
-        if start.elapsed() >= timeout {
-            child.kill().ok();
-            return Ok(None);
+    let pid = child.id();
+
+    std::thread::spawn(move || {
+        let result = child.wait_with_output();
+        let _ = tx.send(result);
+    });
+
+    match rx.recv_timeout(Duration::from_millis(timeout_ms)) {
+        Ok(result) => {
+            let out = result.map_err(io::Error::other)?;
+            Ok(Some(out))
         }
-
-        if let Some(_status) = child.try_wait().map_err(io::Error::other)? {
-            let out = child.wait_with_output().map_err(io::Error::other)?;
-            return Ok(Some(out));
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            #[cfg(unix)]
+            {
+                let _ = std::process::Command::new("kill")
+                    .arg("-9")
+                    .arg(pid.to_string())
+                    .output();
+            }
+            #[cfg(windows)]
+            {
+                let _ = std::process::Command::new("taskkill")
+                    .arg("/F")
+                    .arg("/PID")
+                    .arg(pid.to_string())
+                    .output();
+            }
+            Ok(None)
         }
-
-        std::thread::sleep(Duration::from_millis(10));
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err(ToolError::Error("execute thread disconnected".into()))
+        }
     }
 }
 
@@ -968,3 +989,5 @@ pub fn is_dangerous_command(command: &str) -> bool {
     let low = command.to_lowercase();
     low.contains("rm -rf") || low.contains("mkfs") || low.contains(":(){ :|:& };:")
 }
+
+mod bash_test;
