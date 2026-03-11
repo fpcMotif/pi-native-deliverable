@@ -17,13 +17,13 @@ pub async fn run_rpc(agent: &Agent) -> std::io::Result<()> {
         request_id: None,
         capabilities: serde_json::json!({
             "provider": agent.config.provider.name(),
-            "models": [agent.config.default_provider_model.clone()],
+            "models": [&agent.config.default_provider_model],
             "tools": agent
                 .config
                 .tool_registry
                 .list()
                 .iter()
-                .map(|tool| tool.name.clone())
+                .map(|tool| &tool.name)
                 .collect::<Vec<_>>(),
             "line_limit": agent.config.line_limit,
             "session": {
