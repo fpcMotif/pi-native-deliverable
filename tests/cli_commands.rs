@@ -35,13 +35,11 @@ fn print_short_flag_writes_to_stdout() {
     let stderr_str = String::from_utf8_lossy(&output.stderr);
     let filtered_stderr: Vec<&str> = stderr_str
         .lines()
-        .filter(|line| !line.contains("pi-search: watcher save_index failed: io: background task failed"))
+        .filter(|line| {
+            !line.contains("pi-search: watcher save_index failed: io: background task failed")
+        })
         .collect();
-    assert!(
-        filtered_stderr.is_empty(),
-        "stderr: {}",
-        stderr_str
-    );
+    assert!(filtered_stderr.is_empty(), "stderr: {}", stderr_str);
     assert!(!output.stdout.is_empty());
 }
 
