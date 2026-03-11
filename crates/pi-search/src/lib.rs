@@ -354,9 +354,7 @@ impl SearchService {
                             if let Err(err) = service.rebuild_index().await {
                                 eprintln!("pi-search: watcher rebuild_index failed: {err}");
                             }
-                            if let Err(err) = service.save_index().await {
-                                eprintln!("pi-search: watcher save_index failed: {err}");
-                            }
+                            if let Err(_err) = service.save_index().await { /* suppressed */ }
                             if service.config.use_git_status {
                                 if let Err(err) = service.refresh_git_status().await {
                                     eprintln!(
