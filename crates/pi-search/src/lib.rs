@@ -35,18 +35,13 @@ pub struct SearchFilter {
     pub extension: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum GrepMode {
+    #[default]
     PlainText,
     Regex,
     Fuzzy,
-}
-
-impl Default for GrepMode {
-    fn default() -> Self {
-        Self::PlainText
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -179,17 +174,6 @@ struct IndexedFile {
     git_status: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PersistedIndex {
-    version: u32,
-    workspace_root: PathBuf,
-    created_at_ms: u64,
-    items: Vec<IndexedFile>,
-}
-
-const INDEX_FORMAT_VERSION: u32 = 1;
-const INDEX_CACHE_FILE: &str = ".pi/cache/search-index-v1.json";
-
 #[derive(Debug)]
 pub struct SearchService {
     config: SearchServiceConfig,
@@ -200,7 +184,7 @@ pub struct SearchService {
 impl SearchService {
     pub async fn new(mut config: SearchServiceConfig) -> SearchResult<std::sync::Arc<Self>> {
         if config.index_path.is_none() {
-            config.index_path = Some(config.workspace_root.join(INDEX_CACHE_FILE));
+            config.index_path = Some(config.workspace_root.join(".pi/cache/search-index-v1.json"));
         }
         let service = std::sync::Arc::new(Self {
             config,
@@ -727,129 +711,10 @@ impl SearchService {
 
         Ok(())
     }
-
-    async fn apply_fs_event(&self, event: &notify::Event) -> SearchResult<()> {
-        let mut index = self.index.write().await;
-        for changed_path in &event.paths {
-            let relative = match changed_path.strip_prefix(&self.config.workspace_root) {
-                Ok(v) => v.to_string_lossy().to_string(),
-                Err(_) => continue,
-            };
-
-            if should_ignore_path(&relative) {
-                continue;
-            }
-
-            index.retain(|entry| entry.absolute_path != *changed_path);
-            if changed_path.is_file() {
-                let metadata = changed_path.metadata()?;
-                if metadata.len() <= self.config.max_file_size {
-                    let modified_ms = metadata
-                        .modified()
-                        .unwrap_or_else(|_| SystemTime::now())
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis() as u64;
-                    index.push(IndexedFile {
-                        relative_path: relative,
-                        absolute_path: changed_path.clone(),
-                        size_bytes: metadata.len(),
-                        mtime_ms: modified_ms,
-                        frecency: 0,
-                        git_status: None,
-                    });
-                }
-            }
-        }
-        index.sort_by(|left, right| {
-            left.relative_path
-                .cmp(&right.relative_path)
-                .then(left.mtime_ms.cmp(&right.mtime_ms))
-        });
-        drop(index);
-        self.health_check_index().await?;
-        self.persist_index().await
-    }
-
-    async fn load_index_from_disk(&self) -> SearchResult<bool> {
-        let path = self.index_cache_path();
-        if !path.exists() {
-            return Ok(false);
-        }
-
-        let bytes = match tokio::fs::read(&path).await {
-            Ok(v) => v,
-            Err(_) => return Ok(false),
-        };
-        let persisted: PersistedIndex = match serde_json::from_slice(&bytes) {
-            Ok(v) => v,
-            Err(_) => return Ok(false),
-        };
-
-        if persisted.version != INDEX_FORMAT_VERSION
-            || persisted.workspace_root != self.config.workspace_root
-        {
-            return Ok(false);
-        }
-        let mut index = self.index.write().await;
-        *index = persisted.items;
-        drop(index);
-        if self.health_check_index().await.is_err() {
-            return Ok(false);
-        }
-        Ok(true)
-    }
-
-    async fn persist_index(&self) -> SearchResult<()> {
-        let path = self.index_cache_path();
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-        let index = self.index.read().await.clone();
-        let payload = PersistedIndex {
-            version: INDEX_FORMAT_VERSION,
-            workspace_root: self.config.workspace_root.clone(),
-            created_at_ms: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64,
-            items: index,
-        };
-        tokio::fs::write(path, serde_json::to_vec(&payload)?).await?;
-        Ok(())
-    }
-
-    async fn health_check_index(&self) -> SearchResult<()> {
-        let index = self.index.read().await;
-        for pair in index.windows(2) {
-            if pair[0].relative_path > pair[1].relative_path {
-                return Err(SearchError::InvalidToken(
-                    "index ordering invalid".to_string(),
-                ));
-            }
-        }
-
-        let missing = index
-            .iter()
-            .take(64)
-            .filter(|entry| !entry.absolute_path.exists())
-            .count();
-        if missing > 0 {
-            return Err(SearchError::InvalidToken(
-                "index points to missing files".to_string(),
-            ));
-        }
-
-        Ok(())
-    }
-
-    fn index_cache_path(&self) -> PathBuf {
-        self.config.workspace_root.join(INDEX_CACHE_FILE)
-    }
 }
 
 fn matches_scope(entry: &IndexedFile, scope: Option<&str>) -> bool {
-    scope.is_none_or(|scope| scope_is_prefix(&entry.relative_path, scope))
+    scope.map_or(true, |scope| scope_is_prefix(&entry.relative_path, scope))
 }
 
 fn matches_filters(entry: &IndexedFile, filters: &[SearchFilter], query: &str) -> bool {
@@ -858,14 +723,13 @@ fn matches_filters(entry: &IndexedFile, filters: &[SearchFilter], query: &str) -
     }
 
     for filter in filters {
-        let ext_ok = filter
-            .extension
-            .as_ref()
-            .is_none_or(|ext| entry.relative_path.ends_with(&format!(".{ext}")));
+        let ext_ok = filter.extension.as_ref().map_or(true, |ext| {
+            entry.relative_path.ends_with(&format!(".{ext}"))
+        });
         let scope_ok = filter
             .path_prefix
             .as_ref()
-            .is_none_or(|prefix| scope_is_prefix(&entry.relative_path, prefix));
+            .map_or(true, |prefix| scope_is_prefix(&entry.relative_path, prefix));
         if !ext_ok || !scope_ok {
             return false;
         }
@@ -931,6 +795,7 @@ fn collect_fuzzy_spans(line: &str, pattern: &str) -> Vec<GrepMatchSpan> {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
 
@@ -1098,7 +963,7 @@ pub fn decode_token(token: &str) -> SearchResult<usize> {
             .try_into()
             .map_err(|_| SearchError::InvalidToken("invalid token payload".to_string()))?,
     );
-    Ok(value
+    value
         .try_into()
-        .map_err(|_| SearchError::InvalidToken("token overflow".to_string()))?)
+        .map_err(|_| SearchError::InvalidToken("token overflow".to_string()))
 }
