@@ -38,11 +38,7 @@ fn print_short_flag_writes_to_stdout() {
         .filter(|line| !line.contains("pi-search: watcher save_index failed"))
         .collect();
 
-    assert!(
-        filtered_stderr.is_empty(),
-        "stderr: {:?}",
-        filtered_stderr
-    );
+    assert!(filtered_stderr.is_empty(), "stderr: {:?}", filtered_stderr);
     assert!(!output.stdout.is_empty());
 }
 
