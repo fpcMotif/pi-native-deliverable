@@ -37,11 +37,17 @@ pub struct Agent {
 #[derive(Debug)]
 enum Command {
     Prompt(ClientRequest),
+    #[allow(dead_code)]
     Steer(ClientRequest),
+    #[allow(dead_code)]
     FollowUp(ClientRequest),
+    #[allow(dead_code)]
     Abort,
+    #[allow(dead_code)]
     GetState,
+    #[allow(dead_code)]
     Compact,
+    #[allow(dead_code)]
     NewSession,
 }
 
