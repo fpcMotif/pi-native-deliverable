@@ -991,3 +991,9 @@ pub fn is_dangerous_command(command: &str) -> bool {
 }
 
 mod bash_test;
+
+impl Default for ToolRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
