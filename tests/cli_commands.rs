@@ -33,12 +33,11 @@ fn print_short_flag_writes_to_stdout() {
 
     assert!(output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let filtered_stderr: Vec<_> = stderr.lines().filter(|l| !l.contains("pi-search: watcher save_index failed")).collect();
-    assert!(
-        filtered_stderr.is_empty(),
-        "stderr: {}",
-        stderr
-    );
+    let filtered_stderr: Vec<_> = stderr
+        .lines()
+        .filter(|l| !l.contains("pi-search: watcher save_index failed"))
+        .collect();
+    assert!(filtered_stderr.is_empty(), "stderr: {}", stderr);
     assert!(!output.stdout.is_empty());
 }
 
