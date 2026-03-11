@@ -35,19 +35,15 @@ pub struct SearchFilter {
     pub extension: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum GrepMode {
+    #[default]
     PlainText,
     Regex,
     Fuzzy,
 }
 
-impl Default for GrepMode {
-    fn default() -> Self {
-        Self::PlainText
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchQuery {
@@ -180,6 +176,7 @@ struct IndexedFile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 struct PersistedIndex {
     version: u32,
     workspace_root: PathBuf,
@@ -187,8 +184,60 @@ struct PersistedIndex {
     items: Vec<IndexedFile>,
 }
 
+#[allow(dead_code)]
 const INDEX_FORMAT_VERSION: u32 = 1;
 const INDEX_CACHE_FILE: &str = ".pi/cache/search-index-v1.json";
+
+fn fast_normalized_levenshtein(line: &str, b_chars_vec: &[char], cache: &mut Vec<usize>) -> f64 {
+    let mut a_chars = 0;
+    let b_chars = b_chars_vec.len();
+
+    cache.clear();
+    cache.extend(1..=b_chars);
+
+    let mut result = b_chars;
+
+    for c in line.chars() {
+        if c.is_ascii() {
+            let a_elem = c.to_ascii_lowercase();
+            let i = a_chars;
+            a_chars += 1;
+
+            result = i + 1;
+            let mut distance_b = i;
+
+            for (j, &b_elem) in b_chars_vec.iter().enumerate() {
+                let cost = usize::from(a_elem != b_elem);
+                let distance_a = distance_b + cost;
+                distance_b = cache[j];
+                result = std::cmp::min(result + 1, std::cmp::min(distance_a, distance_b + 1));
+                cache[j] = result;
+            }
+        } else {
+            for a_elem in c.to_lowercase() {
+                let i = a_chars;
+                a_chars += 1;
+
+                result = i + 1;
+                let mut distance_b = i;
+
+                for (j, &b_elem) in b_chars_vec.iter().enumerate() {
+                    let cost = usize::from(a_elem != b_elem);
+                    let distance_a = distance_b + cost;
+                    distance_b = cache[j];
+                    result = std::cmp::min(result + 1, std::cmp::min(distance_a, distance_b + 1));
+                    cache[j] = result;
+                }
+            }
+        }
+    }
+
+    if a_chars == 0 && b_chars == 0 {
+        return 1.0;
+    }
+
+    1.0 - (result as f64) / (a_chars.max(b_chars) as f64)
+}
 
 #[derive(Debug)]
 pub struct SearchService {
@@ -564,7 +613,8 @@ impl SearchService {
         };
 
         let lower = query.pattern.to_lowercase();
-        let mut lower_line = String::new();
+        let lower_chars: Vec<char> = lower.chars().collect();
+        let mut lev_cache = Vec::new();
         let mut matches = Vec::new();
         let required = start.saturating_add(limit).saturating_add(1);
         let mut has_more = false;
@@ -611,13 +661,8 @@ impl SearchService {
                 let line_match_spans = match &matcher {
                     Matcher::Regex(regex) => collect_match_spans(line, regex),
                     Matcher::Fuzzy => {
-                        lower_line.clear();
-                        for c in line.chars() {
-                            for lc in c.to_lowercase() {
-                                lower_line.push(lc);
-                            }
-                        }
-                        let line_match = normalized_levenshtein(&lower_line, &lower) >= 0.72;
+                        let line_match =
+                            fast_normalized_levenshtein(line, &lower_chars, &mut lev_cache) >= 0.72;
                         if line_match {
                             collect_fuzzy_spans(line, &query.pattern)
                         } else {
@@ -728,6 +773,7 @@ impl SearchService {
         Ok(())
     }
 
+    #[allow(dead_code)]
     async fn apply_fs_event(&self, event: &notify::Event) -> SearchResult<()> {
         let mut index = self.index.write().await;
         for changed_path in &event.paths {
@@ -771,6 +817,7 @@ impl SearchService {
         self.persist_index().await
     }
 
+    #[allow(dead_code)]
     async fn load_index_from_disk(&self) -> SearchResult<bool> {
         let path = self.index_cache_path();
         if !path.exists() {
@@ -800,6 +847,7 @@ impl SearchService {
         Ok(true)
     }
 
+    #[allow(dead_code)]
     async fn persist_index(&self) -> SearchResult<()> {
         let path = self.index_cache_path();
         if let Some(parent) = path.parent() {
@@ -819,6 +867,7 @@ impl SearchService {
         Ok(())
     }
 
+    #[allow(dead_code)]
     async fn health_check_index(&self) -> SearchResult<()> {
         let index = self.index.read().await;
         for pair in index.windows(2) {
@@ -843,13 +892,14 @@ impl SearchService {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn index_cache_path(&self) -> PathBuf {
         self.config.workspace_root.join(INDEX_CACHE_FILE)
     }
 }
 
 fn matches_scope(entry: &IndexedFile, scope: Option<&str>) -> bool {
-    scope.is_none_or(|scope| scope_is_prefix(&entry.relative_path, scope))
+    scope.map_or(true, |scope| scope_is_prefix(&entry.relative_path, scope))
 }
 
 fn matches_filters(entry: &IndexedFile, filters: &[SearchFilter], query: &str) -> bool {
@@ -861,11 +911,11 @@ fn matches_filters(entry: &IndexedFile, filters: &[SearchFilter], query: &str) -
         let ext_ok = filter
             .extension
             .as_ref()
-            .is_none_or(|ext| entry.relative_path.ends_with(&format!(".{ext}")));
+            .map_or(true, |ext| entry.relative_path.ends_with(&format!(".{ext}")));
         let scope_ok = filter
             .path_prefix
             .as_ref()
-            .is_none_or(|prefix| scope_is_prefix(&entry.relative_path, prefix));
+            .map_or(true, |prefix| scope_is_prefix(&entry.relative_path, prefix));
         if !ext_ok || !scope_ok {
             return false;
         }
@@ -931,6 +981,7 @@ fn collect_fuzzy_spans(line: &str, pattern: &str) -> Vec<GrepMatchSpan> {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
 
@@ -1098,7 +1149,7 @@ pub fn decode_token(token: &str) -> SearchResult<usize> {
             .try_into()
             .map_err(|_| SearchError::InvalidToken("invalid token payload".to_string()))?,
     );
-    Ok(value
+    value
         .try_into()
-        .map_err(|_| SearchError::InvalidToken("token overflow".to_string()))?)
+        .map_err(|_| SearchError::InvalidToken("token overflow".to_string()))
 }

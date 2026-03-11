@@ -132,6 +132,42 @@ fn benchmark_grep_budget(c: &mut Criterion) {
     group.finish();
 }
 
+fn benchmark_grep_fuzzy_budget(c: &mut Criterion) {
+    let file_count = read_or_default("PI_BENCH_GREP_FILES", DEFAULT_GREP_FILES);
+    let line_count = read_or_default("PI_BENCH_GREP_LINES", DEFAULT_GREP_LINES);
+
+    let context = with_service(file_count, line_count, |root, count, lines| {
+        make_line_fileset(root, count, lines)
+    });
+
+    let query = GrepQuery {
+        pattern: "needlemarkr".to_string(), // fuzzy pattern
+        mode: GrepMode::Fuzzy,
+        scope: ".".to_string(),
+        limit: 50,
+        token: None,
+        offset: 0,
+    };
+
+    let mut group = c.benchmark_group("grep_corpus_fuzzy_budget");
+    group.throughput(Throughput::Elements(1));
+    group.measurement_time(Duration::from_secs(4));
+    group.warm_up_time(Duration::from_secs(1));
+
+    group.bench_function("first_page_fuzzy", |bench| {
+        let service = context.service.clone();
+        let runtime = &context.runtime;
+        bench.iter(|| {
+            let response = runtime
+                .block_on(service.grep_query(query.clone()))
+                .expect("grep fuzzy query");
+            black_box(response.matches.len());
+        });
+    });
+
+    group.finish();
+}
+
 fn benchmark_find_files_50k(c: &mut Criterion) {
     let file_count = read_or_default("PI_BENCH_FIND_FILES", DEFAULT_FIND_FILES);
 
@@ -170,6 +206,7 @@ fn benchmark_find_files_50k(c: &mut Criterion) {
 criterion_group!(
     search_benchmarks,
     benchmark_grep_budget,
+    benchmark_grep_fuzzy_budget,
     benchmark_find_files_50k
 );
 criterion_main!(search_benchmarks);
