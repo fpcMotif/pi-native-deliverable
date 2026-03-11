@@ -93,6 +93,12 @@ pub struct ToolRegistry {
     tools: std::collections::HashMap<String, Box<dyn Tool>>,
 }
 
+impl Default for ToolRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ToolRegistry {
     pub fn new() -> Self {
         Self {
@@ -163,6 +169,10 @@ impl ToolRegistry {
 
     pub fn list_names(&self) -> Vec<String> {
         self.tools.keys().cloned().collect()
+    }
+
+    pub fn tool_names(&self) -> impl Iterator<Item = &String> {
+        self.tools.keys()
     }
 
     pub fn schema_json(&self) -> Value {
