@@ -614,18 +614,43 @@ impl SearchService {
             for (line_idx, line) in lines.iter().enumerate() {
                 let line_match_spans = match &matcher {
                     Matcher::Regex(regex) => collect_match_spans(line, regex),
+
                     Matcher::Fuzzy => {
-                        lower_line.clear();
-                        for c in line.chars() {
-                            for lc in c.to_lowercase() {
-                                lower_line.push(lc);
-                            }
-                        }
-                        let line_match = normalized_levenshtein(&lower_line, &lower) >= 0.72;
-                        if line_match {
-                            collect_fuzzy_spans(line, &query.pattern)
-                        } else {
+                        let line_len = line.len();
+                        let lower_len = lower.len();
+                        let diff = line_len.abs_diff(lower_len);
+
+                        // Normalized Levenshtein is 1.0 - (dist / max)
+                        // This means `dist <= 0.28 * max` is required for >= 0.72.
+                        // `dist` is at least the length difference.
+                        // We use byte lengths here as a fast early-out.
+                        if (diff as f64) > 0.28 * (line_len.max(lower_len) as f64) {
                             Vec::new()
+                        } else {
+                            lower_line.clear();
+                            // If line is ascii, we can do this without unicode char boundaries.
+                            if line.is_ascii() {
+                                lower_line.push_str(line);
+                                lower_line.make_ascii_lowercase();
+                            } else {
+                                for c in line.chars() {
+                                    for lc in c.to_lowercase() {
+                                        lower_line.push(lc);
+                                    }
+                                }
+                            }
+
+                            // If lengths are exactly the same and strings contain identical chars
+                            // but order might be slightly off.
+                            // But usually, if it doesn't contain a huge chunk of the characters,
+                            // we could filter it even more.
+
+                            let line_match = normalized_levenshtein(&lower_line, &lower) >= 0.72;
+                            if line_match {
+                                collect_fuzzy_spans(line, &query.pattern)
+                            } else {
+                                Vec::new()
+                            }
                         }
                     }
                 };
@@ -1016,103 +1041,4 @@ mod tests {
             Err(SearchError::InvalidToken(_))
         ));
     }
-}
-
-fn should_ignore_path(relative: &str) -> bool {
-    relative.starts_with(".git/")
-        || relative.starts_with("target/")
-        || relative.starts_with(".pi/")
-        || relative.starts_with("node_modules/")
-}
-
-fn score_path_match(path: &str, query: &str) -> f64 {
-    if query.is_empty() {
-        return 0.0;
-    }
-    let path_lc = path.to_lowercase();
-    if path_lc == query {
-        return 1.0;
-    }
-    if path_lc.contains(query) {
-        return 0.9;
-    }
-    normalized_levenshtein(&path_lc, query)
-}
-
-fn score_filename_bonus(path: &str, query: &str) -> f64 {
-    let filename = Path::new(path)
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-    if filename == query {
-        0.6
-    } else if filename.starts_with(query) {
-        0.35
-    } else if filename.contains(query) {
-        0.25
-    } else {
-        0.0
-    }
-}
-
-fn score_extension_bonus(path: &Path) -> f64 {
-    match path.extension().and_then(|ext| ext.to_str()) {
-        Some("rs") => 0.07,
-        Some("toml") | Some("json") | Some("md") => 0.05,
-        Some(_) => 0.02,
-        None => 0.0,
-    }
-}
-
-fn score_entrypoint_bonus(path: &str) -> f64 {
-    if path.ends_with("/main.rs") || path.ends_with("/lib.rs") || path.ends_with("/mod.rs") {
-        0.08
-    } else {
-        0.0
-    }
-}
-
-fn score_git_bonus(status: Option<&str>) -> f64 {
-    match status {
-        Some("M") | Some("MM") | Some("??") => 0.12,
-        Some("A") | Some("AM") | Some(" D") => 0.08,
-        _ => 0.0,
-    }
-}
-
-fn frecency_score(v: u32) -> f64 {
-    (v as f64).min(20.0) / 200.0
-}
-
-fn status_to_frecency(status: &str) -> u32 {
-    match status {
-        "M" | "MM" => 10,
-        "A" | "AM" => 8,
-        "??" => 6,
-        _ => 2,
-    }
-}
-
-pub fn encode_token(index: usize) -> String {
-    STANDARD.encode((index as u64).to_be_bytes())
-}
-
-pub fn decode_token(token: &str) -> SearchResult<usize> {
-    let bytes = STANDARD
-        .decode(token)
-        .map_err(|err| SearchError::InvalidToken(err.to_string()))?;
-    if bytes.len() != 8 {
-        return Err(SearchError::InvalidToken(
-            "token payload size mismatch".to_string(),
-        ));
-    }
-    let value = u64::from_be_bytes(
-        bytes
-            .try_into()
-            .map_err(|_| SearchError::InvalidToken("invalid token payload".to_string()))?,
-    );
-    value
-        .try_into()
-        .map_err(|_| SearchError::InvalidToken("token overflow".to_string()))
 }
