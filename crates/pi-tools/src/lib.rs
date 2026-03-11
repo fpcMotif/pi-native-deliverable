@@ -991,3 +991,47 @@ pub fn is_dangerous_command(command: &str) -> bool {
 }
 
 mod bash_test;
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn test_can_write_path() {
+        let policy = Policy::safe_defaults(std::env::current_dir().unwrap());
+
+        // Allowed paths
+        assert!(policy.can_write_path(Path::new("src/main.rs")));
+        assert!(policy.can_write_path(Path::new("README.md")));
+        assert!(policy.can_write_path(Path::new("tests/foo.rs")));
+        assert!(policy.can_write_path(Path::new("foo/bar/baz.txt")));
+
+        // Denied paths from deny_write_paths (case-insensitive)
+        assert!(!policy.can_write_path(Path::new(".env")));
+        assert!(!policy.can_write_path(Path::new(".ENV")));
+        assert!(!policy.can_write_path(Path::new(".env.local")));
+        assert!(!policy.can_write_path(Path::new(".bash_history")));
+
+        // Hardcoded sensitive directories
+        assert!(!policy.can_write_path(Path::new(".git/config")));
+        assert!(!policy.can_write_path(Path::new("foo/bar/.git/config")));
+        assert!(!policy.can_write_path(Path::new(".ssh/known_hosts")));
+        assert!(!policy.can_write_path(Path::new(".aws/credentials")));
+
+        // Sensitive file prefixes
+        assert!(!policy.can_write_path(Path::new(".env.production")));
+        assert!(!policy.can_write_path(Path::new(".env.test")));
+
+        // Specific SSH key files
+        assert!(!policy.can_write_path(Path::new("id_rsa")));
+        assert!(!policy.can_write_path(Path::new("id_rsa.pub")));
+        assert!(!policy.can_write_path(Path::new("id_ed25519")));
+        assert!(!policy.can_write_path(Path::new("id_ecdsa")));
+        assert!(!policy.can_write_path(Path::new("id_dsa")));
+
+        // Nested restricted file
+        assert!(!policy.can_write_path(Path::new("src/.env")));
+        assert!(!policy.can_write_path(Path::new("src/id_rsa")));
+    }
+}
