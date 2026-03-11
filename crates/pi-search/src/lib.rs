@@ -37,7 +37,6 @@ pub struct SearchFilter {
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[derive(Default)]
 pub enum GrepMode {
     #[default]
     PlainText,
@@ -168,6 +167,9 @@ impl Default for SearchServiceConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct IndexedFile {
     relative_path: String,
+    #[serde(skip)]
+    #[serde(default)]
+    relative_path_lc: String,
     absolute_path: PathBuf,
     size_bytes: u64,
     mtime_ms: u64,
@@ -277,6 +279,7 @@ impl SearchService {
                     .unwrap_or(0);
 
                 items.push(IndexedFile {
+                    relative_path_lc: relative.to_lowercase(),
                     relative_path: relative,
                     absolute_path: path.to_path_buf(),
                     size_bytes: metadata.len(),
@@ -300,7 +303,10 @@ impl SearchService {
     pub async fn load_index(&self) -> bool {
         if let Some(path) = &self.config.index_path {
             if let Ok(bytes) = tokio::fs::read(path).await {
-                if let Ok(items) = serde_json::from_slice::<Vec<IndexedFile>>(&bytes) {
+                if let Ok(mut items) = serde_json::from_slice::<Vec<IndexedFile>>(&bytes) {
+                    for item in items.iter_mut() {
+                        item.relative_path_lc = item.relative_path.to_lowercase();
+                    }
                     // Staleness check: verify all cached files still exist on disk
                     let stale = items.iter().any(|f| !f.absolute_path.exists());
                     if stale {
@@ -440,7 +446,7 @@ impl SearchService {
                 continue;
             }
 
-            let base = score_path_match(&entry.relative_path, &needle);
+            let base = score_path_match(&entry.relative_path_lc, &needle);
             if base <= 0.0 {
                 continue;
             }
@@ -750,6 +756,7 @@ impl SearchService {
                         .unwrap_or_default()
                         .as_millis() as u64;
                     index.push(IndexedFile {
+                        relative_path_lc: relative.to_lowercase(),
                         relative_path: relative,
                         absolute_path: changed_path.clone(),
                         size_bytes: metadata.len(),
@@ -792,7 +799,11 @@ impl SearchService {
             return Ok(false);
         }
         let mut index = self.index.write().await;
-        *index = persisted.items;
+        let mut items = persisted.items;
+        for item in items.iter_mut() {
+            item.relative_path_lc = item.relative_path.to_lowercase();
+        }
+        *index = items;
         drop(index);
         if self.health_check_index().await.is_err() {
             return Ok(false);
