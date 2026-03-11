@@ -531,7 +531,7 @@ fn score_path_match(path: &str, query: &str) -> f64 {
         return 1.0;
     }
     if path_lc.contains(query) {
-        return 0.9;
+        return 0.9 - (path_lc.len() as f64 * 0.001);
     }
     normalized_levenshtein(&path_lc, query)
 }
