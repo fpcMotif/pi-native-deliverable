@@ -4,9 +4,9 @@ use clap::{Parser, Subcommand, ValueEnum};
 use pi_core::{run_rpc, Agent, AgentConfig};
 use pi_llm::{MockProvider, Provider};
 use pi_protocol::{parse_client_request, protocol_version, to_json_line, ServerEvent};
+use pi_search::{SearchService, SearchServiceConfig};
 use pi_session::SessionStore;
 use pi_tools::{default_registry, Policy};
-use pi_search::{SearchService, SearchServiceConfig};
 use std::io::{self, Write};
 use std::path::PathBuf;
 use tokio::io::{self as tokio_io, AsyncBufReadExt};
@@ -72,7 +72,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let workspace = cli.workspace.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+    let workspace = cli
+        .workspace
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
     let line_limit = cli.line_limit.unwrap_or(1024 * 1024);
 
     let provider = build_provider(&cli.provider).await;
@@ -193,14 +195,15 @@ async fn run_interactive(agent: Agent) {
             continue;
         }
 
-        let request = match parse_client_request(&serde_json::json!({
-            "v": protocol_version(),
-            "type": "prompt",
-            "id": Uuid::new_v4().to_string(),
-            "message": line,
-        })
-        .to_string())
-        {
+        let request = match parse_client_request(
+            &serde_json::json!({
+                "v": protocol_version(),
+                "type": "prompt",
+                "id": Uuid::new_v4().to_string(),
+                "message": line,
+            })
+            .to_string(),
+        ) {
             Ok(value) => value,
             Err(err) => {
                 let _ = out.write_all(format!("parse error: {err}\n").as_bytes());
@@ -211,7 +214,10 @@ async fn run_interactive(agent: Agent) {
         match agent.handle_request(request).await {
             Ok(events) => {
                 for event in events {
-                    if let ServerEvent::MessageUpdate { delta, done: false, .. } = event {
+                    if let ServerEvent::MessageUpdate {
+                        delta, done: false, ..
+                    } = event
+                    {
                         let _ = out.write_all(delta.as_bytes());
                     } else if let ServerEvent::MessageUpdate { done: true, .. } = event {
                         let _ = out.write_all(b"\n");

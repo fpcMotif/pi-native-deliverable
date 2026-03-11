@@ -4,9 +4,8 @@ pub mod rpc;
 pub mod session;
 
 pub use rpc::{
-    parse_client_request, ProtocolError,
+    make_error_event, parse_client_request, to_json_line, to_jsonl_value, ProtocolError,
     ProtocolErrorPayload, ProtocolVersion, RpcLineCodecConfig, ServerEvent, ToJsonLineError,
-    make_error_event, to_json_line, to_jsonl_value,
 };
 pub use session::{normalize_jsonl, SessionEntry, SessionEntryKind, SessionLog, SessionQuery};
 

@@ -10,7 +10,14 @@ use std::process::{Command, Stdio};
 fn rpc_smoke_prompt_and_events() {
     // Spawn `pi --mode rpc`
     let mut child = Command::new(env!("CARGO_BIN_EXE_pi"))
-        .args(["--mode", "rpc", "--provider", "mock", "--model", "mock-tool-call"])
+        .args([
+            "--mode",
+            "rpc",
+            "--provider",
+            "mock",
+            "--model",
+            "mock-tool-call",
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -59,5 +66,8 @@ fn rpc_smoke_prompt_and_events() {
     let _ = child.wait();
 
     assert!(saw_ready, "expected a ready event");
-    assert!(saw_message_update, "expected at least one message_update event");
+    assert!(
+        saw_message_update,
+        "expected at least one message_update event"
+    );
 }

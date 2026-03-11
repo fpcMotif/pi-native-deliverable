@@ -1,4 +1,4 @@
-use pi_ext::{explain_policy, Policy, Capability};
+use pi_ext::{explain_policy, Capability, Policy};
 
 #[test]
 fn extension_policy_explains_denial() {
