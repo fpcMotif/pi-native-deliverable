@@ -416,4 +416,61 @@ mod tests {
         // Clean up
         let _ = fs::remove_file(session_path);
     }
+
+    #[tokio::test]
+    async fn test_prune_to_depth() {
+        let temp_dir = env::temp_dir();
+        let session_path = temp_dir.join(format!("{}.jsonl", Uuid::new_v4()));
+
+        // Initialize a minimal SessionStore
+        let mut store = SessionStore::new(&session_path).await.unwrap();
+
+        // Empty store
+        assert_eq!(store.prune_to_depth(0), Vec::<Uuid>::new());
+        assert_eq!(store.prune_to_depth(1), Vec::<Uuid>::new());
+        assert_eq!(store.prune_to_depth(5), Vec::<Uuid>::new());
+
+        // Add 1 entry
+        let e1_id = store
+            .append(SessionEntryKind::UserMessage {
+                text: "hello".to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(store.prune_to_depth(0), Vec::<Uuid>::new());
+        assert_eq!(store.prune_to_depth(1), vec![e1_id]);
+        assert_eq!(store.prune_to_depth(5), vec![e1_id]);
+
+        // Add 3 more entries
+        let e2_id = store
+            .append(SessionEntryKind::AssistantMessage {
+                text: "world".to_string(),
+            })
+            .await
+            .unwrap();
+        let e3_id = store
+            .append(SessionEntryKind::UserMessage {
+                text: "how".to_string(),
+            })
+            .await
+            .unwrap();
+        let e4_id = store
+            .append(SessionEntryKind::AssistantMessage {
+                text: "are you".to_string(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(store.prune_to_depth(0), Vec::<Uuid>::new());
+        assert_eq!(store.prune_to_depth(1), vec![e4_id]);
+        assert_eq!(store.prune_to_depth(2), vec![e4_id, e3_id]);
+        assert_eq!(store.prune_to_depth(3), vec![e4_id, e3_id, e2_id]);
+        assert_eq!(store.prune_to_depth(4), vec![e4_id, e3_id, e2_id, e1_id]);
+        assert_eq!(store.prune_to_depth(5), vec![e4_id, e3_id, e2_id, e1_id]);
+        assert_eq!(store.prune_to_depth(10), vec![e4_id, e3_id, e2_id, e1_id]);
+
+        // Clean up
+        let _ = fs::remove_file(session_path);
+    }
 }
