@@ -795,7 +795,6 @@ fn collect_fuzzy_spans(line: &str, pattern: &str) -> Vec<GrepMatchSpan> {
         })
 }
 
-
 fn should_ignore_path(relative: &str) -> bool {
     relative.starts_with(".git/")
         || relative.starts_with("target/")
