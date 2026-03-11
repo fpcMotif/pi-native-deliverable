@@ -172,6 +172,10 @@ impl ToolRegistry {
         self.tools.keys().cloned().collect()
     }
 
+    pub fn tool_names(&self) -> impl Iterator<Item = &String> {
+        self.tools.keys()
+    }
+
     pub fn schema_json(&self) -> Value {
         let tools: Vec<_> = self
             .list()

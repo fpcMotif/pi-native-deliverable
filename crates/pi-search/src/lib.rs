@@ -37,6 +37,7 @@ pub struct SearchFilter {
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum GrepMode {
     #[default]
     PlainText,
