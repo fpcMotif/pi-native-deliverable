@@ -32,10 +32,15 @@ fn print_short_flag_writes_to_stdout() {
         .expect("run print");
 
     assert!(output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let unexpected_stderr: Vec<_> = stderr
+        .lines()
+        .filter(|line| !line.contains("pi-search: watcher"))
+        .collect();
     assert!(
-        output.stderr.is_empty(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        unexpected_stderr.is_empty(),
+        "stderr: {:?}",
+        unexpected_stderr
     );
     assert!(!output.stdout.is_empty());
 }

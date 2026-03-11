@@ -94,6 +94,7 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
             tools: std::collections::HashMap::new(),
