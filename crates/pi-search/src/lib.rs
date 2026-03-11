@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 #![forbid(unsafe_code)]
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -37,16 +38,12 @@ pub struct SearchFilter {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum GrepMode {
+    #[default]
     PlainText,
     Regex,
     Fuzzy,
-}
-
-impl Default for GrepMode {
-    fn default() -> Self {
-        Self::PlainText
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -564,6 +561,7 @@ impl SearchService {
         };
 
         let lower = query.pattern.to_lowercase();
+        let lower_pat_len = lower.chars().count();
         let mut lower_line = String::new();
         let mut matches = Vec::new();
         let required = start.saturating_add(limit).saturating_add(1);
@@ -611,17 +609,27 @@ impl SearchService {
                 let line_match_spans = match &matcher {
                     Matcher::Regex(regex) => collect_match_spans(line, regex),
                     Matcher::Fuzzy => {
-                        lower_line.clear();
-                        for c in line.chars() {
-                            for lc in c.to_lowercase() {
-                                lower_line.push(lc);
-                            }
-                        }
-                        let line_match = normalized_levenshtein(&lower_line, &lower) >= 0.72;
-                        if line_match {
-                            collect_fuzzy_spans(line, &query.pattern)
-                        } else {
+                        let line_len = line.chars().count();
+                        let max_len = line_len.max(lower_pat_len);
+                        let len_diff = line_len.abs_diff(lower_pat_len);
+
+                        // Heuristic: Levenshtein distance must be <= 0.28 * max_len to score >= 0.72
+                        // Since distance >= len_diff, if len_diff > 0.28 * max_len, we can skip.
+                        if (len_diff as f64) > 0.28 * (max_len as f64) {
                             Vec::new()
+                        } else {
+                            lower_line.clear();
+                            for c in line.chars() {
+                                for lc in c.to_lowercase() {
+                                    lower_line.push(lc);
+                                }
+                            }
+                            let line_match = normalized_levenshtein(&lower_line, &lower) >= 0.72;
+                            if line_match {
+                                collect_fuzzy_spans(line, &query.pattern)
+                            } else {
+                                Vec::new()
+                            }
                         }
                     }
                 };
@@ -849,7 +857,7 @@ impl SearchService {
 }
 
 fn matches_scope(entry: &IndexedFile, scope: Option<&str>) -> bool {
-    scope.is_none_or(|scope| scope_is_prefix(&entry.relative_path, scope))
+    scope.map_or(true, |scope| scope_is_prefix(&entry.relative_path, scope))
 }
 
 fn matches_filters(entry: &IndexedFile, filters: &[SearchFilter], query: &str) -> bool {
@@ -858,14 +866,13 @@ fn matches_filters(entry: &IndexedFile, filters: &[SearchFilter], query: &str) -
     }
 
     for filter in filters {
-        let ext_ok = filter
-            .extension
-            .as_ref()
-            .is_none_or(|ext| entry.relative_path.ends_with(&format!(".{ext}")));
+        let ext_ok = filter.extension.as_ref().map_or(true, |ext| {
+            entry.relative_path.ends_with(&format!(".{ext}"))
+        });
         let scope_ok = filter
             .path_prefix
             .as_ref()
-            .is_none_or(|prefix| scope_is_prefix(&entry.relative_path, prefix));
+            .map_or(true, |prefix| scope_is_prefix(&entry.relative_path, prefix));
         if !ext_ok || !scope_ok {
             return false;
         }
@@ -931,6 +938,7 @@ fn collect_fuzzy_spans(line: &str, pattern: &str) -> Vec<GrepMatchSpan> {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
 
@@ -1098,7 +1106,7 @@ pub fn decode_token(token: &str) -> SearchResult<usize> {
             .try_into()
             .map_err(|_| SearchError::InvalidToken("invalid token payload".to_string()))?,
     );
-    Ok(value
+    value
         .try_into()
-        .map_err(|_| SearchError::InvalidToken("token overflow".to_string()))?)
+        .map_err(|_| SearchError::InvalidToken("token overflow".to_string()))
 }
