@@ -205,7 +205,7 @@ impl SessionStore {
     pub async fn compact(&mut self, path: Option<&Path>) -> Result<usize> {
         let target = path
             .map(Path::to_path_buf)
-            .unwrap_or_else(|| self.path.with_extension("compact.jsonl"));
+            .unwrap_or_else(|| self.path.clone());
 
         let mut lines = String::new();
         for entry in &self.log.entries {

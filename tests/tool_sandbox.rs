@@ -63,6 +63,7 @@ fn tool_policy_blocks_binary_read() {
         name: "read".to_string(),
         args: json!({
             "path": "binary.bin",
+            "max_bytes": 1024,
         }),
     };
 
@@ -86,9 +87,11 @@ fn bash_dangerous_command_is_blocked() {
     assert!(matches!(res, Err(ToolError::Denied(_))));
 }
 
+
 #[test]
 fn bash_dangerous_command_detector_is_stable() {
     assert!(is_dangerous_command("rm -rf /tmp/x"));
     assert!(is_dangerous_command("mkfs /dev/sda"));
     assert!(is_dangerous_command(":(){ :|:& };:"));
     assert!(!is_dangerous_command("echo safe"));
+}
