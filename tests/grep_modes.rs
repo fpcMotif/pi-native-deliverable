@@ -15,5 +15,4 @@ fn grep_modes_plain_vs_regex() {
     //
     // let regex = svc.grep("A.C", GrepMode::Regex, opts).unwrap();
     // assert!(regex.matches.len() >= 1);
-    assert!(true);
 }

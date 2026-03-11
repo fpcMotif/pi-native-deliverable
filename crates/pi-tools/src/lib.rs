@@ -68,6 +68,12 @@ pub struct ToolRegistry {
     tools: std::collections::HashMap<String, Box<dyn Tool>>,
 }
 
+impl Default for ToolRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ToolRegistry {
     pub fn new() -> Self {
         Self {
@@ -301,7 +307,7 @@ impl Tool for ReadTool {
         let normalized = policy.canonicalize_path(&path, cwd)?;
         let mut bytes = Vec::new();
         fs::File::open(&normalized)?.read_to_end(&mut bytes)?;
-        if bytes.iter().any(|byte| *byte == 0) {
+        if bytes.contains(&0) {
             return Err(ToolError::denied("refusing to read binary file"));
         }
 

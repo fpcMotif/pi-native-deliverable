@@ -31,6 +31,7 @@ pub struct Agent {
     state: Arc<Mutex<RunState>>,
     abort_tx: mpsc::Sender<()>,
     abort_rx: Arc<tokio::sync::Mutex<mpsc::Receiver<()>>>,
+    cached_tool_names: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -45,7 +46,7 @@ impl CommandBus {
 }
 
 #[derive(Debug)]
-enum Command {
+pub enum Command {
     Prompt(ClientRequest),
     Steer(ClientRequest),
     FollowUp(ClientRequest),
@@ -84,11 +85,13 @@ impl std::fmt::Display for AgentError {
 impl Agent {
     pub async fn new(config: AgentConfig) -> Self {
         let (sender, receiver) = mpsc::channel(16);
+        let cached_tool_names = config.tool_registry.list().into_iter().map(|tool| tool.name).collect();
         Self {
             config,
             state: Arc::new(Mutex::new(RunState::Idle)),
             abort_tx: sender,
             abort_rx: Arc::new(tokio::sync::Mutex::new(receiver)),
+            cached_tool_names,
         }
     }
 
@@ -242,7 +245,7 @@ impl Agent {
                 role: "user".to_string(),
                 content: message,
             }],
-            tools: self.config.tool_registry.list().iter().map(|tool| tool.name.clone()).collect(),
+            tools: self.cached_tool_names.clone(),
             stream: true,
             temperature: 0.2,
             metadata: Default::default(),
@@ -418,6 +421,7 @@ impl Agent {
 
 struct ToolCallResultOutput {
     tool_name: String,
+    #[allow(dead_code)]
     call_id: String,
     result: ToolCallResult,
 }

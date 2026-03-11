@@ -503,11 +503,11 @@ fn matches_filters(entry: &IndexedFile, filters: &[SearchFilter], query: &str) -
         let ext_ok = filter
             .extension
             .as_ref()
-            .is_none_or(|ext| entry.relative_path.ends_with(&format!(".{ext}")));
+            .map_or(true, |ext| entry.relative_path.ends_with(&format!(".{ext}")));
         let scope_ok = filter
             .path_prefix
             .as_ref()
-            .is_none_or(|prefix| entry.relative_path.starts_with(prefix));
+            .map_or(true, |prefix| entry.relative_path.starts_with(prefix));
         if !ext_ok || !scope_ok {
             return false;
         }
@@ -605,5 +605,5 @@ pub fn decode_token(token: &str) -> SearchResult<usize> {
             .try_into()
             .map_err(|_| SearchError::InvalidToken("invalid token payload".to_string()))?,
     );
-    Ok(value.try_into().map_err(|_| SearchError::InvalidToken("token overflow".to_string()))?)
+    value.try_into().map_err(|_| SearchError::InvalidToken("token overflow".to_string()))
 }

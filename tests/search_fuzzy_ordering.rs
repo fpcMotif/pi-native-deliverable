@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 
 /// Fuzzy scoring ordering smoke test.
 /// The exact scoring implementation is in `pi-search` and should remain stable for these cases.
@@ -18,5 +17,4 @@ fn fuzzy_scoring_prefers_entrypoints_and_filename_bonus() {
     // let files = vec![ ... ];
     // let res = pi_search::SearchService::fuzzy_files("main", ctx).unwrap();
     // assert_eq!(res.items[0].relative_path, "src/main.rs");
-    assert!(true);
 }

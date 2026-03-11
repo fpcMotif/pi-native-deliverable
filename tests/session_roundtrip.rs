@@ -1,5 +1,4 @@
 use std::fs;
-use std::path::PathBuf;
 
 /// Session JSONL roundtrip should preserve semantics.
 /// This test assumes `pi-protocol` exposes `SessionLog` types and `normalize()` helper.
@@ -9,10 +8,8 @@ fn session_jsonl_roundtrip_semantics() {
     let session_path = tmp.path().join("session.jsonl");
 
     // Minimal synthetic session log. The actual schema lives in pi-protocol.
-    let entries = vec![
-        r#"{"schema_version":"1.0","entry_id":"00000000-0000-0000-0000-000000000001","kind":"user_message","parent_id":null,"payload":{"text":"hello"}}"#,
-        r#"{"schema_version":"1.0","entry_id":"00000000-0000-0000-0000-000000000002","kind":"assistant_message","parent_id":"00000000-0000-0000-0000-000000000001","payload":{"text":"hi"}}"#,
-    ];
+    let entries = [r#"{"schema_version":"1.0","entry_id":"00000000-0000-0000-0000-000000000001","kind":"user_message","parent_id":null,"payload":{"text":"hello"}}"#,
+        r#"{"schema_version":"1.0","entry_id":"00000000-0000-0000-0000-000000000002","kind":"assistant_message","parent_id":"00000000-0000-0000-0000-000000000001","payload":{"text":"hi"}}"#];
 
     fs::write(&session_path, entries.join("\n") + "\n").expect("write session");
 

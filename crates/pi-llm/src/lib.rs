@@ -328,8 +328,8 @@ pub mod openai {
             };
 
             Box::pin(
-                stream::once(async move { stream.await })
-                    .flat_map(|events| stream::iter(events)),
+                stream::once(stream)
+                    .flat_map(stream::iter),
             )
         }
     }

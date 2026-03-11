@@ -142,7 +142,7 @@ async fn main() {
     }
 }
 
-async fn run_protocol_schema(out: PathBuf) {
+async fn run_protocol_schema(_out: PathBuf) {
     #[cfg(feature = "protocol-schema")]
     {
         if let Some(parent) = out.parent() {
@@ -159,8 +159,9 @@ async fn run_protocol_schema(out: PathBuf) {
 
     #[cfg(not(feature = "protocol-schema"))]
     {
-        let _ = tokio_io::write_all(
-            &mut tokio_io::stdout(),
+        let mut stdout = tokio_io::stdout();
+        let _ = tokio::io::AsyncWriteExt::write_all(
+            &mut stdout,
             b"{\"error\":\"protocol-schema feature is disabled\"}",
         )
         .await;
@@ -239,7 +240,7 @@ async fn build_provider(kind: &str) -> std::sync::Arc<dyn Provider> {
                 let base = std::env::var("PI_OPENAI_URL")
                     .unwrap_or_else(|_| "http://127.0.0.1:8000".to_string());
                 let key = std::env::var("OPENAI_API_KEY").ok();
-                return std::sync::Arc::new(pi_llm::openai::OpenAIProvider::new(base, key));
+                std::sync::Arc::new(pi_llm::openai::OpenAIProvider::new(base, key))
             }
             #[cfg(not(feature = "openai"))]
             {
