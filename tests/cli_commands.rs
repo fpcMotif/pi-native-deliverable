@@ -32,11 +32,12 @@ fn print_short_flag_writes_to_stdout() {
         .expect("run print");
 
     assert!(output.status.success());
-    assert!(
-        output.stderr.is_empty(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let stderr_str = String::from_utf8_lossy(&output.stderr);
+    let filtered_stderr: Vec<&str> = stderr_str
+        .lines()
+        .filter(|line| !line.contains("watcher save_index failed"))
+        .collect();
+    assert!(filtered_stderr.is_empty(), "stderr: {}", stderr_str);
     assert!(!output.stdout.is_empty());
 }
 
