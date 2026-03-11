@@ -356,9 +356,7 @@ pub mod openai {
                 out
             };
 
-            Box::pin(
-                stream::once(async move { stream.await }).flat_map(|events| stream::iter(events)),
-            )
+            Box::pin(stream::once(stream).flat_map(stream::iter))
         }
     }
 }
