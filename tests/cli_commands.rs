@@ -39,11 +39,7 @@ fn print_short_flag_writes_to_stdout() {
         .collect::<Vec<_>>()
         .join("\n");
 
-    assert!(
-        filtered_stderr.is_empty(),
-        "stderr: {}",
-        filtered_stderr
-    );
+    assert!(filtered_stderr.is_empty(), "stderr: {}", filtered_stderr);
     assert!(!output.stdout.is_empty());
 }
 
