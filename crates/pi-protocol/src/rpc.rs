@@ -379,21 +379,6 @@ pub fn to_json_line(event: &ServerEvent) -> Result<String, ToJsonLineError> {
         .map(|line| format!("{line}\n"))
 }
 
-#[derive(Debug)]
-enum RpcEnvelopeType {
-    Prompt,
-    Steer,
-    FollowUp,
-    Abort,
-    GetState,
-    Compact,
-    NewSession,
-    SelectSessionPath,
-    ForkSession,
-    CheckoutBranchHead,
-    Unknown,
-}
-
 pub fn make_error_event(
     code: impl Into<String>,
     message: impl Into<String>,
@@ -457,6 +442,127 @@ struct CheckoutBranchHeadRequest {
     from_turn_id: Option<serde_json::Value>,
 }
 
+fn parse_prompt_request(
+    raw_map: serde_json::Map<String, Value>,
+) -> Result<ClientRequest, ProtocolError> {
+    let request: PromptRequest = deserialize_request(Value::Object(raw_map))?;
+    validate_version(&request.v)?;
+    Ok(ClientRequest::Prompt {
+        v: request.v,
+        id: as_opt_string(request.id),
+        message: request.message,
+        attachments: request.attachments,
+    })
+}
+
+fn parse_steer_request(
+    raw_map: serde_json::Map<String, Value>,
+) -> Result<ClientRequest, ProtocolError> {
+    let request: MessageRequest = deserialize_request(Value::Object(raw_map))?;
+    validate_version(&request.v)?;
+    Ok(ClientRequest::Steer {
+        v: request.v,
+        id: as_opt_string(request.id),
+        message: request.message,
+    })
+}
+
+fn parse_follow_up_request(
+    raw_map: serde_json::Map<String, Value>,
+) -> Result<ClientRequest, ProtocolError> {
+    let request: MessageRequest = deserialize_request(Value::Object(raw_map))?;
+    validate_version(&request.v)?;
+    Ok(ClientRequest::FollowUp {
+        v: request.v,
+        id: as_opt_string(request.id),
+        message: request.message,
+    })
+}
+
+fn parse_abort_request(
+    raw_map: serde_json::Map<String, Value>,
+) -> Result<ClientRequest, ProtocolError> {
+    let request: IdOnlyRequest = deserialize_request(Value::Object(raw_map))?;
+    validate_version(&request.v)?;
+    Ok(ClientRequest::Abort {
+        v: request.v,
+        id: as_opt_string(request.id),
+    })
+}
+
+fn parse_get_state_request(
+    raw_map: serde_json::Map<String, Value>,
+) -> Result<ClientRequest, ProtocolError> {
+    let request: IdOnlyRequest = deserialize_request(Value::Object(raw_map))?;
+    validate_version(&request.v)?;
+    Ok(ClientRequest::GetState {
+        v: request.v,
+        id: as_opt_string(request.id),
+    })
+}
+
+fn parse_compact_request(
+    raw_map: serde_json::Map<String, Value>,
+) -> Result<ClientRequest, ProtocolError> {
+    let request: CompactRequest = deserialize_request(Value::Object(raw_map))?;
+    validate_version(&request.v)?;
+    Ok(ClientRequest::Compact {
+        v: request.v,
+        id: as_opt_string(request.id),
+        reserve_tokens: request.reserve_tokens,
+        keep_recent_tokens: request.keep_recent_tokens,
+    })
+}
+
+fn parse_new_session_request(
+    raw_map: serde_json::Map<String, Value>,
+) -> Result<ClientRequest, ProtocolError> {
+    let request: IdOnlyRequest = deserialize_request(Value::Object(raw_map))?;
+    validate_version(&request.v)?;
+    Ok(ClientRequest::NewSession {
+        v: request.v,
+        id: as_opt_string(request.id),
+    })
+}
+
+fn parse_select_session_path_request(
+    raw_map: serde_json::Map<String, Value>,
+) -> Result<ClientRequest, ProtocolError> {
+    let request: SessionPathRequest = deserialize_request(Value::Object(raw_map))?;
+    validate_version(&request.v)?;
+    Ok(ClientRequest::SelectSessionPath {
+        v: request.v,
+        id: as_opt_string(request.id),
+        path: request.path,
+    })
+}
+
+fn parse_fork_session_request(
+    raw_map: serde_json::Map<String, Value>,
+) -> Result<ClientRequest, ProtocolError> {
+    let request: ForkSessionRequest = deserialize_request(Value::Object(raw_map))?;
+    validate_version(&request.v)?;
+    let from_turn_id = as_value_to_string(request.from_turn_id)
+        .ok_or_else(|| ProtocolError::InvalidPayload("missing from_turn_id".to_string()))?;
+    Ok(ClientRequest::ForkSession {
+        v: request.v,
+        id: as_opt_string(request.id),
+        from_turn_id,
+    })
+}
+
+fn parse_checkout_branch_head_request(
+    raw_map: serde_json::Map<String, Value>,
+) -> Result<ClientRequest, ProtocolError> {
+    let request: CheckoutBranchHeadRequest = deserialize_request(Value::Object(raw_map))?;
+    validate_version(&request.v)?;
+    Ok(ClientRequest::CheckoutBranchHead {
+        v: request.v,
+        id: as_opt_string(request.id),
+        from_turn_id: request.from_turn_id.and_then(as_value_to_string),
+    })
+}
+
 pub fn parse_client_request(raw: &str) -> Result<ClientRequest, ProtocolError> {
     let envelope = serde_json::from_str::<Value>(raw)?;
     let Value::Object(mut raw_map) = envelope else {
@@ -479,121 +585,21 @@ pub fn parse_client_request(raw: &str) -> Result<ClientRequest, ProtocolError> {
             .ok_or_else(|| ProtocolError::InvalidVersion(PROTOCOL_VERSION.to_string()))?,
     )?;
 
-    let request_type = match request_type {
-        "prompt" => RpcEnvelopeType::Prompt,
-        "steer" => RpcEnvelopeType::Steer,
-        "follow_up" => RpcEnvelopeType::FollowUp,
-        "abort" => RpcEnvelopeType::Abort,
-        "get_state" => RpcEnvelopeType::GetState,
-        "compact" => RpcEnvelopeType::Compact,
-        "new_session" => RpcEnvelopeType::NewSession,
-        "select_session_path" => RpcEnvelopeType::SelectSessionPath,
-        "fork_session" => RpcEnvelopeType::ForkSession,
-        "checkout_branch_head" => RpcEnvelopeType::CheckoutBranchHead,
-        _ => RpcEnvelopeType::Unknown,
-    };
-
-    let request = match request_type {
-        RpcEnvelopeType::Prompt => {
-            let request: PromptRequest = deserialize_request(Value::Object(raw_map.clone()))?;
-            validate_version(&request.v)?;
-            ClientRequest::Prompt {
-                v: request.v,
-                id: as_opt_string(request.id),
-                message: request.message,
-                attachments: request.attachments,
-            }
-        }
-        RpcEnvelopeType::Steer => {
-            let request: MessageRequest = deserialize_request(Value::Object(raw_map.clone()))?;
-            validate_version(&request.v)?;
-            ClientRequest::Steer {
-                v: request.v,
-                id: as_opt_string(request.id),
-                message: request.message,
-            }
-        }
-        RpcEnvelopeType::FollowUp => {
-            let request: MessageRequest = deserialize_request(Value::Object(raw_map.clone()))?;
-            validate_version(&request.v)?;
-            ClientRequest::FollowUp {
-                v: request.v,
-                id: as_opt_string(request.id),
-                message: request.message,
-            }
-        }
-        RpcEnvelopeType::Abort => {
-            let request: IdOnlyRequest = deserialize_request(Value::Object(raw_map.clone()))?;
-            validate_version(&request.v)?;
-            ClientRequest::Abort {
-                v: request.v,
-                id: as_opt_string(request.id),
-            }
-        }
-        RpcEnvelopeType::GetState => {
-            let request: IdOnlyRequest = deserialize_request(Value::Object(raw_map.clone()))?;
-            validate_version(&request.v)?;
-            ClientRequest::GetState {
-                v: request.v,
-                id: as_opt_string(request.id),
-            }
-        }
-        RpcEnvelopeType::Compact => {
-            let request: CompactRequest = deserialize_request(Value::Object(raw_map.clone()))?;
-            validate_version(&request.v)?;
-            ClientRequest::Compact {
-                v: request.v,
-                id: as_opt_string(request.id),
-                reserve_tokens: request.reserve_tokens,
-                keep_recent_tokens: request.keep_recent_tokens,
-            }
-        }
-        RpcEnvelopeType::NewSession => {
-            let request: IdOnlyRequest = deserialize_request(Value::Object(raw_map.clone()))?;
-            validate_version(&request.v)?;
-            ClientRequest::NewSession {
-                v: request.v,
-                id: as_opt_string(request.id),
-            }
-        }
-        RpcEnvelopeType::SelectSessionPath => {
-            let request: SessionPathRequest = deserialize_request(Value::Object(raw_map.clone()))?;
-            validate_version(&request.v)?;
-            ClientRequest::SelectSessionPath {
-                v: request.v,
-                id: as_opt_string(request.id),
-                path: request.path,
-            }
-        }
-        RpcEnvelopeType::ForkSession => {
-            let request: ForkSessionRequest = deserialize_request(Value::Object(raw_map.clone()))?;
-            validate_version(&request.v)?;
-            let from_turn_id = as_value_to_string(request.from_turn_id)
-                .ok_or_else(|| ProtocolError::InvalidPayload("missing from_turn_id".to_string()))?;
-            ClientRequest::ForkSession {
-                v: request.v,
-                id: as_opt_string(request.id),
-                from_turn_id,
-            }
-        }
-        RpcEnvelopeType::CheckoutBranchHead => {
-            let request: CheckoutBranchHeadRequest =
-                deserialize_request(Value::Object(raw_map.clone()))?;
-            validate_version(&request.v)?;
-            ClientRequest::CheckoutBranchHead {
-                v: request.v,
-                id: as_opt_string(request.id),
-                from_turn_id: request.from_turn_id.and_then(as_value_to_string),
-            }
-        }
-        RpcEnvelopeType::Unknown => {
-            return Err(ProtocolError::UnsupportedMessageType(
-                raw_request_type.to_string(),
-            ));
-        }
-    };
-
-    Ok(request)
+    match request_type {
+        "prompt" => parse_prompt_request(raw_map),
+        "steer" => parse_steer_request(raw_map),
+        "follow_up" => parse_follow_up_request(raw_map),
+        "abort" => parse_abort_request(raw_map),
+        "get_state" => parse_get_state_request(raw_map),
+        "compact" => parse_compact_request(raw_map),
+        "new_session" => parse_new_session_request(raw_map),
+        "select_session_path" => parse_select_session_path_request(raw_map),
+        "fork_session" => parse_fork_session_request(raw_map),
+        "checkout_branch_head" => parse_checkout_branch_head_request(raw_map),
+        _ => Err(ProtocolError::UnsupportedMessageType(
+            raw_request_type.to_string(),
+        )),
+    }
 }
 
 fn as_opt_string(value: Option<Value>) -> Option<String> {
