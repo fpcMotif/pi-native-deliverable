@@ -356,9 +356,7 @@ pub mod openai {
                 out
             };
 
-            Box::pin(
-                stream::once(stream).flat_map(stream::iter),
-            )
+            Box::pin(stream::once(stream).flat_map(stream::iter))
         }
     }
 }
