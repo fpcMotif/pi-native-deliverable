@@ -935,6 +935,105 @@ fn scope_is_prefix(path: &str, scope: &str) -> bool {
     Path::new(path).starts_with(&normalized_scope)
 }
 
+fn should_ignore_path(relative: &str) -> bool {
+    relative.starts_with(".git/")
+        || relative.starts_with("target/")
+        || relative.starts_with(".pi/")
+        || relative.starts_with("node_modules/")
+}
+
+fn score_path_match(path_lower: &str, query_lower: &str) -> f64 {
+    if query_lower.is_empty() {
+        return 0.0;
+    }
+    if path_lower == query_lower {
+        return 1.0;
+    }
+    if path_lower.contains(query_lower) {
+        let contains_score = 0.9 - (path_lower.len() as f64 * 0.001);
+        return contains_score.max(0.01);
+    }
+    normalized_levenshtein(path_lower, query_lower)
+}
+
+fn score_filename_bonus(path: &str, query: &str) -> f64 {
+    let filename = Path::new(path)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if filename == query {
+        0.6
+    } else if filename.starts_with(query) {
+        0.35
+    } else if filename.contains(query) {
+        0.25
+    } else {
+        0.0
+    }
+}
+
+fn score_extension_bonus(path: &Path) -> f64 {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some("rs") => 0.07,
+        Some("toml") | Some("json") | Some("md") => 0.05,
+        Some(_) => 0.02,
+        None => 0.0,
+    }
+}
+
+fn score_entrypoint_bonus(path: &str) -> f64 {
+    if path.ends_with("/main.rs") || path.ends_with("/lib.rs") || path.ends_with("/mod.rs") {
+        0.08
+    } else {
+        0.0
+    }
+}
+
+fn score_git_bonus(status: Option<&str>) -> f64 {
+    match status {
+        Some("M") | Some("MM") | Some("??") => 0.12,
+        Some("A") | Some("AM") | Some(" D") => 0.08,
+        _ => 0.0,
+    }
+}
+
+fn frecency_score(v: u32) -> f64 {
+    (v as f64).min(20.0) / 200.0
+}
+
+fn status_to_frecency(status: &str) -> u32 {
+    match status {
+        "M" | "MM" => 10,
+        "A" | "AM" => 8,
+        "??" => 6,
+        _ => 2,
+    }
+}
+
+pub fn encode_token(index: usize) -> String {
+    STANDARD.encode((index as u64).to_be_bytes())
+}
+
+pub fn decode_token(token: &str) -> SearchResult<usize> {
+    let bytes = STANDARD
+        .decode(token)
+        .map_err(|err| SearchError::InvalidToken(err.to_string()))?;
+    if bytes.len() != 8 {
+        return Err(SearchError::InvalidToken(
+            "token payload size mismatch".to_string(),
+        ));
+    }
+    let value = u64::from_be_bytes(
+        bytes
+            .try_into()
+            .map_err(|_| SearchError::InvalidToken("invalid token payload".to_string()))?,
+    );
+    value
+        .try_into()
+        .map_err(|_| SearchError::InvalidToken("token overflow".to_string()))
+}
+
 fn collect_match_spans(line: &str, regex: &Regex) -> Vec<GrepMatchSpan> {
     regex
         .find_iter(line)
@@ -992,6 +1091,28 @@ mod tests {
         assert!(scope_is_prefix("any/path.txt", "."));
         assert!(scope_is_prefix("any/path.txt", ""));
         assert!(!scope_is_prefix("foo/bar.txt", "baz"));
+    }
+
+    #[test]
+    fn score_path_match_penalizes_deeper_contains_matches() {
+        assert!(
+            score_path_match("src/main.rs", "main")
+                > score_path_match("crates/app/src/main.rs", "main")
+        );
+    }
+
+    #[test]
+    fn score_path_match_keeps_long_contains_matches_positive() {
+        let long_path = format!("{}main.rs", "nested/".repeat(200));
+        assert!(score_path_match(&long_path, "main") > 0.0);
+    }
+
+    #[test]
+    fn filename_prefix_bonus_beats_infix_bonus() {
+        assert!(
+            score_filename_bonus("src/main_service.rs", "main")
+                > score_filename_bonus("src/domain_main.rs", "main")
+        );
     }
 
     #[test]
