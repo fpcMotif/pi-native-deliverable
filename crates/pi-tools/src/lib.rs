@@ -991,3 +991,4 @@ pub fn is_dangerous_command(command: &str) -> bool {
 }
 
 mod bash_test;
+mod registry_test;
