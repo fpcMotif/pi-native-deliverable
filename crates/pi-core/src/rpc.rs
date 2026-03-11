@@ -23,7 +23,7 @@ pub async fn run_rpc(agent: &Agent) -> std::io::Result<()> {
                 .tool_registry
                 .list()
                 .iter()
-                .map(|tool| tool.name.clone())
+                .map(|tool| &tool.name)
                 .collect::<Vec<_>>(),
             "line_limit": agent.config.line_limit,
             "session": {
