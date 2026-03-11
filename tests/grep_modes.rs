@@ -22,7 +22,7 @@ fn grep_modes_plain_vs_regex_and_highlights() {
             .await
             .unwrap();
         assert!(
-            plain.matches.len() >= 1,
+            !plain.matches.is_empty(),
             "PlainText mode should find case-insensitive ABC"
         );
         assert!(
@@ -38,7 +38,7 @@ fn grep_modes_plain_vs_regex_and_highlights() {
             .await
             .unwrap();
         assert!(
-            regex.matches.len() >= 1,
+            !regex.matches.is_empty(),
             "Regex mode should resolve A.C to ABC"
         );
         assert!(
