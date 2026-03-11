@@ -472,7 +472,7 @@ impl Tool for BashTool {
         })
     }
 
-    fn execute(&self, call: &ToolCall, policy: &Policy, _cwd: &Path) -> Result<ToolCallResult> {
+    fn execute(&self, call: &ToolCall, policy: &Policy, cwd: &Path) -> Result<ToolCallResult> {
         let command = read_arg::<String>(call, "command")?;
         if is_dangerous_command(&command) {
             return Err(ToolError::denied("command blocked by policy"));
@@ -485,8 +485,23 @@ impl Tool for BashTool {
                 .unwrap_or(policy.command_timeout_ms)
                 .min(policy.command_timeout_ms);
 
-        let mut child = Command::new("sh");
-        child.arg("-lc").arg(command);
+        let workspace = policy.workspace_root.canonicalize().unwrap_or_else(|_| policy.workspace_root.clone());
+        let cwd_abs = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+        let relative_cwd = cwd_abs.strip_prefix(&workspace).unwrap_or(Path::new(""));
+
+        let container_workspace = "/workspace";
+        let container_cwd = Path::new(container_workspace).join(relative_cwd);
+
+        let mut child = Command::new("docker");
+        child.arg("run")
+            .arg("--rm")
+            .arg("--network=none")
+            .arg("-v").arg(format!("{}:{}", workspace.display(), container_workspace))
+            .arg("-w").arg(container_cwd.to_string_lossy().to_string())
+            .arg("alpine")
+            .arg("sh")
+            .arg("-c")
+            .arg(command);
 
         let output = match execute_with_timeout(child, timeout_ms)? {
             Some(value) => value,
