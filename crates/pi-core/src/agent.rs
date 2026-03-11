@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 #![forbid(unsafe_code)]
 
 use futures::StreamExt;
