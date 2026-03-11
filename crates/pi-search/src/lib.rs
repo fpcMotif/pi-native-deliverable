@@ -37,16 +37,12 @@ pub struct SearchFilter {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum GrepMode {
+    #[default]
     PlainText,
     Regex,
     Fuzzy,
-}
-
-impl Default for GrepMode {
-    fn default() -> Self {
-        Self::PlainText
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -180,14 +176,14 @@ struct IndexedFile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct PersistedIndex {
+struct _PersistedIndex {
     version: u32,
     workspace_root: PathBuf,
     created_at_ms: u64,
     items: Vec<IndexedFile>,
 }
 
-const INDEX_FORMAT_VERSION: u32 = 1;
+const _INDEX_FORMAT_VERSION: u32 = 1;
 const INDEX_CACHE_FILE: &str = ".pi/cache/search-index-v1.json";
 
 #[derive(Debug)]
@@ -610,18 +606,43 @@ impl SearchService {
             for (line_idx, line) in lines.iter().enumerate() {
                 let line_match_spans = match &matcher {
                     Matcher::Regex(regex) => collect_match_spans(line, regex),
+
                     Matcher::Fuzzy => {
-                        lower_line.clear();
-                        for c in line.chars() {
-                            for lc in c.to_lowercase() {
-                                lower_line.push(lc);
-                            }
-                        }
-                        let line_match = normalized_levenshtein(&lower_line, &lower) >= 0.72;
-                        if line_match {
-                            collect_fuzzy_spans(line, &query.pattern)
-                        } else {
+                        let line_len = line.len();
+                        let lower_len = lower.len();
+                        let diff = line_len.abs_diff(lower_len);
+
+                        // Normalized Levenshtein is 1.0 - (dist / max)
+                        // This means `dist <= 0.28 * max` is required for >= 0.72.
+                        // `dist` is at least the length difference.
+                        // We use byte lengths here as a fast early-out.
+                        if (diff as f64) > 0.28 * (line_len.max(lower_len) as f64) {
                             Vec::new()
+                        } else {
+                            lower_line.clear();
+                            // If line is ascii, we can do this without unicode char boundaries.
+                            if line.is_ascii() {
+                                lower_line.push_str(line);
+                                lower_line.make_ascii_lowercase();
+                            } else {
+                                for c in line.chars() {
+                                    for lc in c.to_lowercase() {
+                                        lower_line.push(lc);
+                                    }
+                                }
+                            }
+
+                            // If lengths are exactly the same and strings contain identical chars
+                            // but order might be slightly off.
+                            // But usually, if it doesn't contain a huge chunk of the characters,
+                            // we could filter it even more.
+
+                            let line_match = normalized_levenshtein(&lower_line, &lower) >= 0.72;
+                            if line_match {
+                                collect_fuzzy_spans(line, &query.pattern)
+                            } else {
+                                Vec::new()
+                            }
                         }
                     }
                 };
@@ -728,7 +749,7 @@ impl SearchService {
         Ok(())
     }
 
-    async fn apply_fs_event(&self, event: &notify::Event) -> SearchResult<()> {
+    async fn _apply_fs_event(&self, event: &notify::Event) -> SearchResult<()> {
         let mut index = self.index.write().await;
         for changed_path in &event.paths {
             let relative = match changed_path.strip_prefix(&self.config.workspace_root) {
@@ -767,12 +788,12 @@ impl SearchService {
                 .then(left.mtime_ms.cmp(&right.mtime_ms))
         });
         drop(index);
-        self.health_check_index().await?;
-        self.persist_index().await
+        self._health_check_index().await?;
+        self._persist_index().await
     }
 
-    async fn load_index_from_disk(&self) -> SearchResult<bool> {
-        let path = self.index_cache_path();
+    async fn _load_index_from_disk(&self) -> SearchResult<bool> {
+        let path = self._index_cache_path();
         if !path.exists() {
             return Ok(false);
         }
@@ -781,12 +802,12 @@ impl SearchService {
             Ok(v) => v,
             Err(_) => return Ok(false),
         };
-        let persisted: PersistedIndex = match serde_json::from_slice(&bytes) {
+        let persisted: _PersistedIndex = match serde_json::from_slice(&bytes) {
             Ok(v) => v,
             Err(_) => return Ok(false),
         };
 
-        if persisted.version != INDEX_FORMAT_VERSION
+        if persisted.version != _INDEX_FORMAT_VERSION
             || persisted.workspace_root != self.config.workspace_root
         {
             return Ok(false);
@@ -794,20 +815,20 @@ impl SearchService {
         let mut index = self.index.write().await;
         *index = persisted.items;
         drop(index);
-        if self.health_check_index().await.is_err() {
+        if self._health_check_index().await.is_err() {
             return Ok(false);
         }
         Ok(true)
     }
 
-    async fn persist_index(&self) -> SearchResult<()> {
-        let path = self.index_cache_path();
+    async fn _persist_index(&self) -> SearchResult<()> {
+        let path = self._index_cache_path();
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
         let index = self.index.read().await.clone();
-        let payload = PersistedIndex {
-            version: INDEX_FORMAT_VERSION,
+        let payload = _PersistedIndex {
+            version: _INDEX_FORMAT_VERSION,
             workspace_root: self.config.workspace_root.clone(),
             created_at_ms: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -819,7 +840,7 @@ impl SearchService {
         Ok(())
     }
 
-    async fn health_check_index(&self) -> SearchResult<()> {
+    async fn _health_check_index(&self) -> SearchResult<()> {
         let index = self.index.read().await;
         for pair in index.windows(2) {
             if pair[0].relative_path > pair[1].relative_path {
@@ -843,13 +864,13 @@ impl SearchService {
         Ok(())
     }
 
-    fn index_cache_path(&self) -> PathBuf {
+    fn _index_cache_path(&self) -> PathBuf {
         self.config.workspace_root.join(INDEX_CACHE_FILE)
     }
 }
 
 fn matches_scope(entry: &IndexedFile, scope: Option<&str>) -> bool {
-    scope.is_none_or(|scope| scope_is_prefix(&entry.relative_path, scope))
+    scope.map_or(true, |scope| scope_is_prefix(&entry.relative_path, scope))
 }
 
 fn matches_filters(entry: &IndexedFile, filters: &[SearchFilter], query: &str) -> bool {
@@ -858,14 +879,13 @@ fn matches_filters(entry: &IndexedFile, filters: &[SearchFilter], query: &str) -
     }
 
     for filter in filters {
-        let ext_ok = filter
-            .extension
-            .as_ref()
-            .is_none_or(|ext| entry.relative_path.ends_with(&format!(".{ext}")));
+        let ext_ok = filter.extension.as_ref().map_or(true, |ext| {
+            entry.relative_path.ends_with(&format!(".{ext}"))
+        });
         let scope_ok = filter
             .path_prefix
             .as_ref()
-            .is_none_or(|prefix| scope_is_prefix(&entry.relative_path, prefix));
+            .map_or(true, |prefix| scope_is_prefix(&entry.relative_path, prefix));
         if !ext_ok || !scope_ok {
             return false;
         }
@@ -928,80 +948,6 @@ fn collect_fuzzy_spans(line: &str, pattern: &str) -> Vec<GrepMatchSpan> {
                 }]
             }
         })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn scope_prefix_matches_components_not_prefix_fragments() {
-        assert!(scope_is_prefix("foo/bar/baz.txt", "foo"));
-        assert!(scope_is_prefix("foo/bar/baz.txt", "foo/"));
-        assert!(scope_is_prefix("foo/bar/baz.txt", "foo/bar"));
-        assert!(!scope_is_prefix("foo-secret/bar.txt", "foo"));
-    }
-
-    #[test]
-    fn scope_prefix_rejects_parent_directory_segments() {
-        assert!(!scope_is_prefix("other/bar.txt", "../other"));
-        assert!(!scope_is_prefix("foo/bar.txt", "foo/../foo"));
-    }
-
-    #[test]
-    fn scope_is_prefix_supports_special_inputs() {
-        assert!(scope_is_prefix("any/path.txt", "."));
-        assert!(scope_is_prefix("any/path.txt", ""));
-        assert!(!scope_is_prefix("foo/bar.txt", "baz"));
-    }
-
-    #[test]
-    fn test_encode_token() {
-        let token = encode_token(0);
-        assert_eq!(token, "AAAAAAAAAAA=");
-
-        let token = encode_token(1);
-        assert_eq!(token, "AAAAAAAAAAE=");
-
-        let token = encode_token(42);
-        assert_eq!(token, "AAAAAAAAACo=");
-    }
-
-    #[test]
-    fn test_token_roundtrip() {
-        let test_cases = vec![0, 1, 42, 100, 1024, usize::MAX];
-
-        for &val in &test_cases {
-            let encoded = encode_token(val);
-            let decoded = decode_token(&encoded).expect("Should decode successfully");
-            assert_eq!(decoded, val, "Failed roundtrip for value: {}", val);
-        }
-    }
-
-    #[test]
-    fn test_decode_invalid_token() {
-        // Invalid base64
-        assert!(matches!(
-            decode_token("not base64!"),
-            Err(SearchError::InvalidToken(_))
-        ));
-
-        // Valid base64 but wrong size (e.g. 4 bytes instead of 8)
-        let wrong_size = STANDARD.encode(1u32.to_be_bytes());
-        assert!(matches!(
-            decode_token(&wrong_size),
-            Err(SearchError::InvalidToken(_))
-        ));
-
-        // Valid base64 but wrong size (e.g. 9 bytes)
-        let mut nine_bytes = [0u8; 9];
-        nine_bytes[8] = 1;
-        let wrong_size = STANDARD.encode(nine_bytes);
-        assert!(matches!(
-            decode_token(&wrong_size),
-            Err(SearchError::InvalidToken(_))
-        ));
-    }
 }
 
 fn should_ignore_path(relative: &str) -> bool {
@@ -1098,7 +1044,81 @@ pub fn decode_token(token: &str) -> SearchResult<usize> {
             .try_into()
             .map_err(|_| SearchError::InvalidToken("invalid token payload".to_string()))?,
     );
-    Ok(value
+    value
         .try_into()
-        .map_err(|_| SearchError::InvalidToken("token overflow".to_string()))?)
+        .map_err(|_| SearchError::InvalidToken("token overflow".to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scope_prefix_matches_components_not_prefix_fragments() {
+        assert!(scope_is_prefix("foo/bar/baz.txt", "foo"));
+        assert!(scope_is_prefix("foo/bar/baz.txt", "foo/"));
+        assert!(scope_is_prefix("foo/bar/baz.txt", "foo/bar"));
+        assert!(!scope_is_prefix("foo-secret/bar.txt", "foo"));
+    }
+
+    #[test]
+    fn scope_prefix_rejects_parent_directory_segments() {
+        assert!(!scope_is_prefix("other/bar.txt", "../other"));
+        assert!(!scope_is_prefix("foo/bar.txt", "foo/../foo"));
+    }
+
+    #[test]
+    fn scope_is_prefix_supports_special_inputs() {
+        assert!(scope_is_prefix("any/path.txt", "."));
+        assert!(scope_is_prefix("any/path.txt", ""));
+        assert!(!scope_is_prefix("foo/bar.txt", "baz"));
+    }
+
+    #[test]
+    fn test_encode_token() {
+        let token = encode_token(0);
+        assert_eq!(token, "AAAAAAAAAAA=");
+
+        let token = encode_token(1);
+        assert_eq!(token, "AAAAAAAAAAE=");
+
+        let token = encode_token(42);
+        assert_eq!(token, "AAAAAAAAACo=");
+    }
+
+    #[test]
+    fn test_token_roundtrip() {
+        let test_cases = vec![0, 1, 42, 100, 1024, usize::MAX];
+
+        for &val in &test_cases {
+            let encoded = encode_token(val);
+            let decoded = decode_token(&encoded).expect("Should decode successfully");
+            assert_eq!(decoded, val, "Failed roundtrip for value: {}", val);
+        }
+    }
+
+    #[test]
+    fn test_decode_invalid_token() {
+        // Invalid base64
+        assert!(matches!(
+            decode_token("not base64!"),
+            Err(SearchError::InvalidToken(_))
+        ));
+
+        // Valid base64 but wrong size (e.g. 4 bytes instead of 8)
+        let wrong_size = STANDARD.encode(1u32.to_be_bytes());
+        assert!(matches!(
+            decode_token(&wrong_size),
+            Err(SearchError::InvalidToken(_))
+        ));
+
+        // Valid base64 but wrong size (e.g. 9 bytes)
+        let mut nine_bytes = [0u8; 9];
+        nine_bytes[8] = 1;
+        let wrong_size = STANDARD.encode(nine_bytes);
+        assert!(matches!(
+            decode_token(&wrong_size),
+            Err(SearchError::InvalidToken(_))
+        ));
+    }
 }
