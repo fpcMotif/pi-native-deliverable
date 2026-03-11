@@ -536,15 +536,15 @@ async fn handle_interactive_session_command(
     } else {
         #[allow(clippy::manual_map)]
         if let Some(turn_id) = trimmed.strip_prefix("/branch-from-turn ") {
-        Some(ClientRequest::ForkSession {
-            v: protocol_version(),
-            id: Some(Uuid::new_v4().to_string()),
-            from_turn_id: turn_id.trim().to_string(),
-        })
-    } else {
-        None
-    }};
-
+            Some(ClientRequest::ForkSession {
+                v: protocol_version(),
+                id: Some(Uuid::new_v4().to_string()),
+                from_turn_id: turn_id.trim().to_string(),
+            })
+        } else {
+            None
+        }
+    };
 
     if let Some(request) = request {
         match agent.handle_request(request).await {
