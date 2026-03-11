@@ -664,10 +664,9 @@ mod tests {
     #[test]
     fn test_parse_client_request_not_object() {
         let result = parse_client_request("[]");
-        assert!(result.is_err());
 
-        match result.unwrap_err() {
-            ProtocolError::InvalidPayload(msg) => {
+        match result {
+            Err(ProtocolError::InvalidPayload(msg)) => {
                 assert_eq!(msg, "request is not an object");
             }
             err => panic!("Expected ProtocolError::InvalidPayload, got: {:?}", err),
@@ -677,16 +676,15 @@ mod tests {
     #[test]
     fn test_parse_client_request_invalid_json() {
         let result = parse_client_request("{");
-        assert!(result.is_err());
 
-        match result.unwrap_err() {
-            ProtocolError::Json(_) => {}
+        match result {
+            Err(ProtocolError::Json(_)) => {}
             err => panic!("Expected ProtocolError::Json, got: {:?}", err),
         }
     }
 
     #[test]
-    fn test_to_jsonl_value_ready_event() {
+    fn test_to_jsonl_value_ready_event() -> Result<(), Box<dyn std::error::Error>> {
         let event = ServerEvent::Ready {
             v: "1.0.0".to_string(),
             id: Some("req-123".to_string()),
@@ -695,14 +693,15 @@ mod tests {
         };
 
         let result = to_jsonl_value(&event);
-        let parsed: Value = serde_json::from_str(&result).unwrap();
+        let parsed: Value = serde_json::from_str(&result)?;
 
         assert_eq!(parsed["type"], "ready");
         assert_eq!(parsed["v"], PROTOCOL_VERSION);
+        Ok(())
     }
 
     #[test]
-    fn test_to_jsonl_value_error_event() {
+    fn test_to_jsonl_value_error_event() -> Result<(), Box<dyn std::error::Error>> {
         let event = ServerEvent::Error {
             v: "1.0.0".to_string(),
             id: None,
@@ -715,14 +714,15 @@ mod tests {
         };
 
         let result = to_jsonl_value(&event);
-        let parsed: Value = serde_json::from_str(&result).unwrap();
+        let parsed: Value = serde_json::from_str(&result)?;
 
         assert_eq!(parsed["type"], "error");
         assert_eq!(parsed["v"], PROTOCOL_VERSION);
+        Ok(())
     }
 
     #[test]
-    fn test_to_jsonl_value_turn_start_event() {
+    fn test_to_jsonl_value_turn_start_event() -> Result<(), Box<dyn std::error::Error>> {
         let event = ServerEvent::TurnStart {
             v: "1.0.0".to_string(),
             id: Some("req-789".to_string()),
@@ -731,14 +731,15 @@ mod tests {
         };
 
         let result = to_jsonl_value(&event);
-        let parsed: Value = serde_json::from_str(&result).unwrap();
+        let parsed: Value = serde_json::from_str(&result)?;
 
         assert_eq!(parsed["type"], "turn_start");
         assert_eq!(parsed["v"], PROTOCOL_VERSION);
+        Ok(())
     }
 
     #[test]
-    fn test_to_jsonl_value_message_update_event() {
+    fn test_to_jsonl_value_message_update_event() -> Result<(), Box<dyn std::error::Error>> {
         let event = ServerEvent::MessageUpdate {
             v: "1.0.0".to_string(),
             id: Some("req-101".to_string()),
@@ -748,9 +749,10 @@ mod tests {
         };
 
         let result = to_jsonl_value(&event);
-        let parsed: Value = serde_json::from_str(&result).unwrap();
+        let parsed: Value = serde_json::from_str(&result)?;
 
         assert_eq!(parsed["type"], "message_update");
         assert_eq!(parsed["v"], PROTOCOL_VERSION);
+        Ok(())
     }
 }
