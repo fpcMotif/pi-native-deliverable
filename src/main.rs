@@ -533,11 +533,13 @@ async fn handle_interactive_session_command(
             path: path.trim().to_string(),
         })
     } else {
-        trimmed.strip_prefix("/branch-from-turn ").map(|turn_id| ClientRequest::ForkSession {
-            v: protocol_version(),
-            id: Some(Uuid::new_v4().to_string()),
-            from_turn_id: turn_id.trim().to_string(),
-        })
+        trimmed
+            .strip_prefix("/branch-from-turn ")
+            .map(|turn_id| ClientRequest::ForkSession {
+                v: protocol_version(),
+                id: Some(Uuid::new_v4().to_string()),
+                from_turn_id: turn_id.trim().to_string(),
+            })
     };
 
     if let Some(request) = request {
