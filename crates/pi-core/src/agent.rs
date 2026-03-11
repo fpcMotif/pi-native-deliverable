@@ -34,6 +34,7 @@ pub struct Agent {
     abort_rx: Arc<tokio::sync::Mutex<mpsc::Receiver<()>>>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 enum Command {
     Prompt(ClientRequest),
