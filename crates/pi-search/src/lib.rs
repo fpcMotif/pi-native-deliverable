@@ -861,10 +861,9 @@ fn matches_filters(entry: &IndexedFile, filters: &[SearchFilter], query: &str) -
     }
 
     for filter in filters {
-        let ext_ok = filter
-            .extension
-            .as_ref()
-            .map_or(true, |ext| entry.relative_path.ends_with(&format!(".{ext}")));
+        let ext_ok = filter.extension.as_ref().map_or(true, |ext| {
+            entry.relative_path.ends_with(&format!(".{ext}"))
+        });
         let scope_ok = filter
             .path_prefix
             .as_ref()
@@ -1031,7 +1030,6 @@ pub fn decode_token(token: &str) -> SearchResult<usize> {
         .try_into()
         .map_err(|_| SearchError::InvalidToken("token overflow".to_string()))
 }
-
 
 #[cfg(test)]
 mod tests {

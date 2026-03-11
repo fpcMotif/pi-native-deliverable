@@ -12,9 +12,9 @@ use pi_session::SessionStore;
 use pi_tools::{default_registry, Policy};
 use std::io::{self, Write};
 use std::path::PathBuf;
-use tokio::io::{self as tokio_io, AsyncBufReadExt};
 #[allow(unused_imports)]
 use tokio::io::AsyncWriteExt;
+use tokio::io::{self as tokio_io, AsyncBufReadExt};
 use uuid::Uuid;
 
 #[derive(Parser, Debug)]
@@ -536,11 +536,13 @@ async fn handle_interactive_session_command(
             path: path.trim().to_string(),
         })
     } else {
-        trimmed.strip_prefix("/branch-from-turn ").map(|turn_id| ClientRequest::ForkSession {
-            v: protocol_version(),
-            id: Some(Uuid::new_v4().to_string()),
-            from_turn_id: turn_id.trim().to_string(),
-        })
+        trimmed
+            .strip_prefix("/branch-from-turn ")
+            .map(|turn_id| ClientRequest::ForkSession {
+                v: protocol_version(),
+                id: Some(Uuid::new_v4().to_string()),
+                from_turn_id: turn_id.trim().to_string(),
+            })
     };
 
     if let Some(request) = request {
