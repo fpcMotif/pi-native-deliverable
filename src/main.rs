@@ -12,7 +12,7 @@ use pi_session::SessionStore;
 use pi_tools::{default_registry, Policy};
 use std::io::{self, Write};
 use std::path::PathBuf;
-use tokio::io::{self as tokio_io, AsyncBufReadExt, AsyncWriteExt};
+use tokio::io::{self as tokio_io, AsyncBufReadExt};
 use uuid::Uuid;
 
 #[derive(Parser, Debug)]
@@ -292,6 +292,7 @@ fn print_print_response(events: &[ServerEvent]) {
     }
 }
 
+#[allow(dead_code)]
 async fn apply_startup_session_controls(_agent: &Agent, _cli: &Cli) {
     // Session controls (open_by_path, branch_from_turn, continue_last)
     // are handled via interactive slash commands and CLI flags at agent construction time.
@@ -317,12 +318,12 @@ async fn run_protocol_schema(_out: PathBuf) {
         let _ = _out;
         let _ = writeln!(
             io::stdout(),
-            "{}",
-            "{\"error\":\"protocol-schema feature is disabled\"}"
+            "\"{{\\\"error\\\":\\\"protocol-schema feature is disabled\\\"}}\""
         );
     }
 }
 
+#[allow(dead_code)]
 async fn print_events_to_stdout(events: &[ServerEvent]) {
     for event in events {
         if let Ok(line) = to_json_line(event) {
@@ -531,14 +532,12 @@ async fn handle_interactive_session_command(
             id: Some(Uuid::new_v4().to_string()),
             path: path.trim().to_string(),
         })
-    } else if let Some(turn_id) = trimmed.strip_prefix("/branch-from-turn ") {
-        Some(ClientRequest::ForkSession {
+    } else {
+        trimmed.strip_prefix("/branch-from-turn ").map(|turn_id| ClientRequest::ForkSession {
             v: protocol_version(),
             id: Some(Uuid::new_v4().to_string()),
             from_turn_id: turn_id.trim().to_string(),
         })
-    } else {
-        None
     };
 
     if let Some(request) = request {
@@ -569,7 +568,7 @@ async fn build_provider(kind: &str) -> std::sync::Arc<dyn Provider> {
                 let base = std::env::var("PI_OPENAI_URL")
                     .unwrap_or_else(|_| "http://127.0.0.1:8000".to_string());
                 let key = std::env::var("OPENAI_API_KEY").ok();
-                return std::sync::Arc::new(pi_llm::openai::OpenAIProvider::new(base, key));
+                std::sync::Arc::new(pi_llm::openai::OpenAIProvider::new(base, key))
             }
             #[cfg(not(feature = "openai"))]
             {
