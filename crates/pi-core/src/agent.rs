@@ -35,6 +35,7 @@ pub struct Agent {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 enum Command {
     Prompt(ClientRequest),
     Steer(ClientRequest),
