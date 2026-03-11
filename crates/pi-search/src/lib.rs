@@ -564,6 +564,7 @@ impl SearchService {
         };
 
         let lower = query.pattern.to_lowercase();
+        let lower_char_count = lower.chars().count();
         let mut lower_line = String::new();
         let mut matches = Vec::new();
         let required = start.saturating_add(limit).saturating_add(1);
@@ -611,17 +612,25 @@ impl SearchService {
                 let line_match_spans = match &matcher {
                     Matcher::Regex(regex) => collect_match_spans(line, regex),
                     Matcher::Fuzzy => {
-                        lower_line.clear();
-                        for c in line.chars() {
-                            for lc in c.to_lowercase() {
-                                lower_line.push(lc);
-                            }
-                        }
-                        let line_match = normalized_levenshtein(&lower_line, &lower) >= 0.72;
-                        if line_match {
-                            collect_fuzzy_spans(line, &query.pattern)
-                        } else {
+                        let l_len = line.chars().count();
+                        let diff = (l_len as isize - lower_char_count as isize).unsigned_abs();
+                        let max_len = l_len.max(lower_char_count);
+                        let bound = (0.28 * max_len as f64).ceil() as usize;
+                        if diff > bound {
                             Vec::new()
+                        } else {
+                            lower_line.clear();
+                            for c in line.chars() {
+                                for lc in c.to_lowercase() {
+                                    lower_line.push(lc);
+                                }
+                            }
+                            let line_match = normalized_levenshtein(&lower_line, &lower) >= 0.72;
+                            if line_match {
+                                collect_fuzzy_spans(line, &query.pattern)
+                            } else {
+                                Vec::new()
+                            }
                         }
                     }
                 };
