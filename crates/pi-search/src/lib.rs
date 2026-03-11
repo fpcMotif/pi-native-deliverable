@@ -37,15 +37,17 @@ pub struct SearchFilter {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[derive(Default)]
 pub enum GrepMode {
-    #[default]
     PlainText,
     Regex,
     Fuzzy,
 }
 
-
+impl Default for GrepMode {
+    fn default() -> Self {
+        Self::PlainText
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchQuery {
@@ -178,7 +180,6 @@ struct IndexedFile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
 struct PersistedIndex {
     version: u32,
     workspace_root: PathBuf,
@@ -186,7 +187,6 @@ struct PersistedIndex {
     items: Vec<IndexedFile>,
 }
 
-#[allow(dead_code)]
 const INDEX_FORMAT_VERSION: u32 = 1;
 const INDEX_CACHE_FILE: &str = ".pi/cache/search-index-v1.json";
 
@@ -728,7 +728,6 @@ impl SearchService {
         Ok(())
     }
 
-    #[allow(dead_code)]
     async fn apply_fs_event(&self, event: &notify::Event) -> SearchResult<()> {
         let mut index = self.index.write().await;
         for changed_path in &event.paths {
@@ -772,7 +771,6 @@ impl SearchService {
         self.persist_index().await
     }
 
-    #[allow(dead_code)]
     async fn load_index_from_disk(&self) -> SearchResult<bool> {
         let path = self.index_cache_path();
         if !path.exists() {
@@ -802,7 +800,6 @@ impl SearchService {
         Ok(true)
     }
 
-    #[allow(dead_code)]
     async fn persist_index(&self) -> SearchResult<()> {
         let path = self.index_cache_path();
         if let Some(parent) = path.parent() {
@@ -822,7 +819,6 @@ impl SearchService {
         Ok(())
     }
 
-    #[allow(dead_code)]
     async fn health_check_index(&self) -> SearchResult<()> {
         let index = self.index.read().await;
         for pair in index.windows(2) {
@@ -847,14 +843,13 @@ impl SearchService {
         Ok(())
     }
 
-    #[allow(dead_code)]
     fn index_cache_path(&self) -> PathBuf {
         self.config.workspace_root.join(INDEX_CACHE_FILE)
     }
 }
 
 fn matches_scope(entry: &IndexedFile, scope: Option<&str>) -> bool {
-    scope.map_or(true, |scope| scope_is_prefix(&entry.relative_path, scope))
+    scope.is_none_or(|scope| scope_is_prefix(&entry.relative_path, scope))
 }
 
 fn matches_filters(entry: &IndexedFile, filters: &[SearchFilter], query: &str) -> bool {
@@ -866,11 +861,11 @@ fn matches_filters(entry: &IndexedFile, filters: &[SearchFilter], query: &str) -
         let ext_ok = filter
             .extension
             .as_ref()
-            .map_or(true, |ext| entry.relative_path.ends_with(&format!(".{ext}")));
+            .is_none_or(|ext| entry.relative_path.ends_with(&format!(".{ext}")));
         let scope_ok = filter
             .path_prefix
             .as_ref()
-            .map_or(true, |prefix| scope_is_prefix(&entry.relative_path, prefix));
+            .is_none_or(|prefix| scope_is_prefix(&entry.relative_path, prefix));
         if !ext_ok || !scope_ok {
             return false;
         }
@@ -1103,7 +1098,7 @@ pub fn decode_token(token: &str) -> SearchResult<usize> {
             .try_into()
             .map_err(|_| SearchError::InvalidToken("invalid token payload".to_string()))?,
     );
-    value
+    Ok(value
         .try_into()
-        .map_err(|_| SearchError::InvalidToken("token overflow".to_string()))
+        .map_err(|_| SearchError::InvalidToken("token overflow".to_string()))?)
 }

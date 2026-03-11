@@ -89,14 +89,15 @@ pub trait Tool: Send + Sync {
     fn execute(&self, call: &ToolCall, policy: &Policy, cwd: &Path) -> Result<ToolCallResult>;
 }
 
-#[derive(Default)]
 pub struct ToolRegistry {
     tools: std::collections::HashMap<String, Box<dyn Tool>>,
 }
 
 impl ToolRegistry {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            tools: std::collections::HashMap::new(),
+        }
     }
 
     pub fn register<T: Tool + 'static>(&mut self, tool: T) {
