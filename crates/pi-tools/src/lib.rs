@@ -987,7 +987,25 @@ fn execute_with_timeout(
 
 pub fn is_dangerous_command(command: &str) -> bool {
     let low = command.to_lowercase();
-    low.contains("rm -rf") || low.contains("mkfs") || low.contains(":(){ :|:& };:")
+
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(
+            r"(?ix)
+            (?:^|;|&|\||\(|\`|\\$\()\s*(?:(?:sudo|time|xargs|exec|env|nohup)\s+)*(?:(?:/[a-z0-9_.\-]+)+/)?(?:
+                rm\s+(?:[^\s]*\s+)*-(?:[A-Za-z0-9]*[rR][A-Za-z0-9]*|-recursive)(?:\s+|$) |
+                mkfs(?:[\.\s]|$) |
+                dd\s+(?:[^\s]*\s+)*of=/dev/(?:sd[a-z]|nvme[0-9]n[0-9]|vd[a-z]) |
+                chmod\s+(?:[^\s]*\s+)*-(?:[A-Za-z0-9]*R[A-Za-z0-9]*|-recursive)(?:\s+|$) |
+                :\s*\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:
+            ) |
+            >.*\/dev\/(?:sd[a-z]|nvme[0-9]n[0-9]|vd[a-z])
+            ",
+        )
+        .expect("invalid dangerous command regex")
+    });
+
+    re.is_match(command) || low.contains(":(){ :|:& };:")
 }
 
 mod bash_test;
