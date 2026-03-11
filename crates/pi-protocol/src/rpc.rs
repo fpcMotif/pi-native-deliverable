@@ -666,7 +666,7 @@ mod tests {
         let result = parse_client_request("[]");
         assert!(result.is_err());
 
-        match result.unwrap_err() {
+        match result.expect_err("Expected an error but got Ok") {
             ProtocolError::InvalidPayload(msg) => {
                 assert_eq!(msg, "request is not an object");
             }
@@ -679,7 +679,7 @@ mod tests {
         let result = parse_client_request("{");
         assert!(result.is_err());
 
-        match result.unwrap_err() {
+        match result.expect_err("Expected an error but got Ok") {
             ProtocolError::Json(_) => {}
             err => panic!("Expected ProtocolError::Json, got: {:?}", err),
         }
@@ -695,7 +695,7 @@ mod tests {
         };
 
         let result = to_jsonl_value(&event);
-        let parsed: Value = serde_json::from_str(&result).unwrap();
+        let parsed: Value = serde_json::from_str(&result).expect("Failed to parse JSON string");
 
         assert_eq!(parsed["type"], "ready");
         assert_eq!(parsed["v"], PROTOCOL_VERSION);
@@ -715,7 +715,7 @@ mod tests {
         };
 
         let result = to_jsonl_value(&event);
-        let parsed: Value = serde_json::from_str(&result).unwrap();
+        let parsed: Value = serde_json::from_str(&result).expect("Failed to parse JSON string");
 
         assert_eq!(parsed["type"], "error");
         assert_eq!(parsed["v"], PROTOCOL_VERSION);
@@ -731,7 +731,7 @@ mod tests {
         };
 
         let result = to_jsonl_value(&event);
-        let parsed: Value = serde_json::from_str(&result).unwrap();
+        let parsed: Value = serde_json::from_str(&result).expect("Failed to parse JSON string");
 
         assert_eq!(parsed["type"], "turn_start");
         assert_eq!(parsed["v"], PROTOCOL_VERSION);
@@ -748,7 +748,7 @@ mod tests {
         };
 
         let result = to_jsonl_value(&event);
-        let parsed: Value = serde_json::from_str(&result).unwrap();
+        let parsed: Value = serde_json::from_str(&result).expect("Failed to parse JSON string");
 
         assert_eq!(parsed["type"], "message_update");
         assert_eq!(parsed["v"], PROTOCOL_VERSION);
