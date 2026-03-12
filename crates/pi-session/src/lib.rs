@@ -416,4 +416,38 @@ mod tests {
         // Clean up
         let _ = fs::remove_file(session_path);
     }
+
+    #[tokio::test]
+    async fn test_prune_to_depth() {
+        let temp_dir = env::temp_dir();
+        let session_path = temp_dir.join(format!("{}.jsonl", Uuid::new_v4()));
+
+        let mut store = SessionStore::new(&session_path).await.unwrap();
+
+        let id1 = store.append(pi_protocol::session::SessionEntryKind::UserMessage { text: "msg 1".into() }).await.unwrap();
+        let id2 = store.append(pi_protocol::session::SessionEntryKind::AssistantMessage { text: "msg 2".into() }).await.unwrap();
+        let id3 = store.append(pi_protocol::session::SessionEntryKind::UserMessage { text: "msg 3".into() }).await.unwrap();
+
+        // depth 0
+        let pruned0 = store.prune_to_depth(0);
+        assert_eq!(pruned0.len(), 0);
+
+        // depth 1
+        let pruned1 = store.prune_to_depth(1);
+        assert_eq!(pruned1, vec![id3]);
+
+        // depth 2
+        let pruned2 = store.prune_to_depth(2);
+        assert_eq!(pruned2, vec![id3, id2]);
+
+        // depth 3 (all)
+        let pruned3 = store.prune_to_depth(3);
+        assert_eq!(pruned3, vec![id3, id2, id1]);
+
+        // depth 4 (more than existing)
+        let pruned4 = store.prune_to_depth(4);
+        assert_eq!(pruned4, vec![id3, id2, id1]);
+
+        let _ = fs::remove_file(session_path);
+    }
 }
