@@ -424,9 +424,24 @@ mod tests {
 
         let mut store = SessionStore::new(&session_path).await.unwrap();
 
-        let id1 = store.append(pi_protocol::session::SessionEntryKind::UserMessage { text: "msg 1".into() }).await.unwrap();
-        let id2 = store.append(pi_protocol::session::SessionEntryKind::AssistantMessage { text: "msg 2".into() }).await.unwrap();
-        let id3 = store.append(pi_protocol::session::SessionEntryKind::UserMessage { text: "msg 3".into() }).await.unwrap();
+        let id1 = store
+            .append(pi_protocol::session::SessionEntryKind::UserMessage {
+                text: "msg 1".into(),
+            })
+            .await
+            .unwrap();
+        let id2 = store
+            .append(pi_protocol::session::SessionEntryKind::AssistantMessage {
+                text: "msg 2".into(),
+            })
+            .await
+            .unwrap();
+        let id3 = store
+            .append(pi_protocol::session::SessionEntryKind::UserMessage {
+                text: "msg 3".into(),
+            })
+            .await
+            .unwrap();
 
         // depth 0
         let pruned0 = store.prune_to_depth(0);
