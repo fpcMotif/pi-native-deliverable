@@ -220,47 +220,59 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_normalize_jsonl_empty() -> Result<(), serde_json::Error> {
-        assert_eq!(normalize_jsonl("")?, "");
-        Ok(())
+    fn test_normalize_jsonl_empty() {
+        assert_eq!(
+            normalize_jsonl("").expect("Failed to normalize empty JSON"),
+            ""
+        );
     }
 
     #[test]
-    fn test_normalize_jsonl_skip_empty_lines() -> Result<(), serde_json::Error> {
-        assert_eq!(normalize_jsonl("\n   \n\n")?, "");
-        Ok(())
+    fn test_normalize_jsonl_skip_empty_lines() {
+        assert_eq!(
+            normalize_jsonl("\n   \n\n").expect("Failed to normalize JSON"),
+            ""
+        );
     }
 
     #[test]
-    fn test_normalize_jsonl_single_object() -> Result<(), serde_json::Error> {
+    fn test_normalize_jsonl_single_object() {
         let raw = r#"{"b": 2, "a": 1}"#;
         let expected = r#"{"a":1,"b":2}"#;
-        assert_eq!(normalize_jsonl(raw)?, expected);
-        Ok(())
+        assert_eq!(
+            normalize_jsonl(raw).expect("Failed to normalize JSON"),
+            expected
+        );
     }
 
     #[test]
-    fn test_normalize_jsonl_nested_objects() -> Result<(), serde_json::Error> {
+    fn test_normalize_jsonl_nested_objects() {
         let raw = r#"{"z": {"d": 4, "c": 3}, "a": {"b": 2, "a": 1}}"#;
         let expected = r#"{"a":{"a":1,"b":2},"z":{"c":3,"d":4}}"#;
-        assert_eq!(normalize_jsonl(raw)?, expected);
-        Ok(())
+        assert_eq!(
+            normalize_jsonl(raw).expect("Failed to normalize JSON"),
+            expected
+        );
     }
 
     #[test]
-    fn test_normalize_jsonl_arrays() -> Result<(), serde_json::Error> {
+    fn test_normalize_jsonl_arrays() {
         let raw = r#"[{"b": 2, "a": 1}, {"d": 4, "c": 3}]"#;
         let expected = r#"[{"a":1,"b":2},{"c":3,"d":4}]"#;
-        assert_eq!(normalize_jsonl(raw)?, expected);
-        Ok(())
+        assert_eq!(
+            normalize_jsonl(raw).expect("Failed to normalize JSON"),
+            expected
+        );
     }
 
     #[test]
-    fn test_normalize_jsonl_multiple_lines() -> Result<(), serde_json::Error> {
+    fn test_normalize_jsonl_multiple_lines() {
         let raw = "{\"b\": 2, \"a\": 1}\n\n{\"d\": 4, \"c\": 3}";
         let expected = "{\"a\":1,\"b\":2}\n{\"c\":3,\"d\":4}";
-        assert_eq!(normalize_jsonl(raw)?, expected);
-        Ok(())
+        assert_eq!(
+            normalize_jsonl(raw).expect("Failed to normalize JSON"),
+            expected
+        );
     }
 
     #[test]
