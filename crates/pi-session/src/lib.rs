@@ -395,12 +395,13 @@ mod tests {
     use std::env;
 
     #[tokio::test]
-    async fn test_checkout_nonexistent_entry() {
+    async fn test_checkout_nonexistent_entry() -> std::result::Result<(), Box<dyn std::error::Error>>
+    {
         let temp_dir = env::temp_dir();
         let session_path = temp_dir.join(format!("{}.jsonl", Uuid::new_v4()));
 
         // Initialize a minimal SessionStore
-        let mut store = SessionStore::new(&session_path).await.unwrap();
+        let mut store = SessionStore::new(&session_path).await?;
 
         // Ensure head_id is initially None
         assert_eq!(store.get_branch_head(), None);
@@ -415,5 +416,6 @@ mod tests {
 
         // Clean up
         let _ = fs::remove_file(session_path);
+        Ok(())
     }
 }
