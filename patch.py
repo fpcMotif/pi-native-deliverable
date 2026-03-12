@@ -1,27 +1,22 @@
-with open("crates/pi-search/src/lib.rs", "r") as f:
+import re
+
+with open('crates/pi-search/src/lib.rs', 'r') as f:
     content = f.read()
 
-s1 = """
-            stats.scanned_files += 1;
-            let text = String::from_utf8_lossy(&bytes);
+target = """            let bytes =
+                match tokio::task::spawn_blocking(move || std::fs::read(&resolved_path)).await {
+                    Ok(Ok(value)) => value,
+                    _ => continue,
+                };"""
 
-            let mut file_matched = false;
-            let mut byte_offset = 0usize;
+replacement = """            let bytes = match tokio::fs::read(&resolved_path).await {
+                Ok(value) => value,
+                Err(_) => continue,
+            };"""
 
-            for (line_idx, line) in text.lines().enumerate() {
-"""
-r1 = """
-            stats.scanned_files += 1;
-            let text = String::from_utf8_lossy(&bytes);
-            let lines: Vec<&str> = text.lines().collect();
-
-            let mut file_matched = false;
-            let mut byte_offset = 0usize;
-
-            for (line_idx, line) in lines.iter().enumerate() {
-"""
-
-content = content.replace(s1[1:], r1[1:])
-
-with open("crates/pi-search/src/lib.rs", "w") as f:
-    f.write(content)
+if target in content:
+    with open('crates/pi-search/src/lib.rs', 'w') as f:
+        f.write(content.replace(target, replacement))
+    print("Replaced successfully")
+else:
+    print("Target not found")
