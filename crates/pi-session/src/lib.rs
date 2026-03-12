@@ -400,7 +400,9 @@ mod tests {
         let session_path = temp_dir.join(format!("{}.jsonl", Uuid::new_v4()));
 
         // Initialize a minimal SessionStore
-        let mut store = SessionStore::new(&session_path).await.unwrap();
+        let mut store = SessionStore::new(&session_path)
+            .await
+            .expect("Failed to create SessionStore");
 
         // Ensure head_id is initially None
         assert_eq!(store.get_branch_head(), None);

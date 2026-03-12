@@ -3,7 +3,9 @@ use std::time::Instant;
 
 #[tokio::main]
 async fn main() {
-    let mut store = SessionStore::new("test_session.jsonl").await.unwrap();
+    let mut store = SessionStore::new("test_session.jsonl")
+        .await
+        .expect("benchmark error");
     // populate
     for _i in 0..10000 {
         store
@@ -11,15 +13,15 @@ async fn main() {
                 text: "hello world ".repeat(10).to_string(),
             })
             .await
-            .unwrap();
+            .expect("benchmark error");
     }
 
     let start = Instant::now();
     for _ in 0..10 {
-        store.compact(None).await.unwrap();
+        store.compact(None).await.expect("benchmark error");
     }
     let duration = start.elapsed();
     println!("Time: {:?}", duration);
-    std::fs::remove_file("test_session.jsonl").unwrap();
-    std::fs::remove_file("test_session.compact.jsonl").unwrap();
+    std::fs::remove_file("test_session.jsonl").expect("benchmark error");
+    std::fs::remove_file("test_session.compact.jsonl").expect("benchmark error");
 }
