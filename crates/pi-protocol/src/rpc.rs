@@ -457,29 +457,16 @@ struct CheckoutBranchHeadRequest {
     from_turn_id: Option<serde_json::Value>,
 }
 
-pub fn parse_client_request(raw: &str) -> Result<ClientRequest, ProtocolError> {
-    let envelope = serde_json::from_str::<Value>(raw)?;
-    let Value::Object(mut raw_map) = envelope else {
-        return Err(ProtocolError::InvalidPayload(
-            "request is not an object".to_string(),
-        ));
-    };
-
+fn extract_request_type(
+    raw_map: &mut serde_json::Map<String, Value>,
+) -> Result<(RpcEnvelopeType, String), ProtocolError> {
     let raw_request_type = raw_map
         .remove("type")
         .and_then(|value| value.as_str().map(str::to_string))
         .ok_or_else(|| ProtocolError::InvalidPayload("missing type".to_string()))?
         .to_ascii_lowercase();
 
-    let request_type = raw_request_type.as_str();
-    validate_version(
-        raw_map
-            .get("v")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ProtocolError::InvalidVersion(PROTOCOL_VERSION.to_string()))?,
-    )?;
-
-    let request_type = match request_type {
+    let request_type = match raw_request_type.as_str() {
         "prompt" => RpcEnvelopeType::Prompt,
         "steer" => RpcEnvelopeType::Steer,
         "follow_up" => RpcEnvelopeType::FollowUp,
@@ -492,6 +479,26 @@ pub fn parse_client_request(raw: &str) -> Result<ClientRequest, ProtocolError> {
         "checkout_branch_head" => RpcEnvelopeType::CheckoutBranchHead,
         _ => RpcEnvelopeType::Unknown,
     };
+
+    Ok((request_type, raw_request_type))
+}
+
+pub fn parse_client_request(raw: &str) -> Result<ClientRequest, ProtocolError> {
+    let envelope = serde_json::from_str::<Value>(raw)?;
+    let Value::Object(mut raw_map) = envelope else {
+        return Err(ProtocolError::InvalidPayload(
+            "request is not an object".to_string(),
+        ));
+    };
+
+    let (request_type, raw_request_type) = extract_request_type(&mut raw_map)?;
+
+    validate_version(
+        raw_map
+            .get("v")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ProtocolError::InvalidVersion(PROTOCOL_VERSION.to_string()))?,
+    )?;
 
     let request = match request_type {
         RpcEnvelopeType::Prompt => parse_prompt_request(raw_map)?,
