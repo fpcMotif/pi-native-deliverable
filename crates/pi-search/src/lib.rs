@@ -647,7 +647,7 @@ impl SearchService {
 
                             let line_match = normalized_levenshtein(&lower_line, &lower) >= 0.72;
                             if line_match {
-                                collect_fuzzy_spans(line, &query.pattern)
+                                collect_fuzzy_spans(line, &lower_line, &lower)
                             } else {
                                 Vec::new()
                             }
@@ -1044,11 +1044,9 @@ fn collect_match_spans(line: &str, regex: &Regex) -> Vec<GrepMatchSpan> {
         .collect()
 }
 
-fn collect_fuzzy_spans(line: &str, pattern: &str) -> Vec<GrepMatchSpan> {
-    let line_lower = line.to_lowercase();
-    let pattern_lower = pattern.to_lowercase();
+fn collect_fuzzy_spans(line: &str, line_lower: &str, pattern_lower: &str) -> Vec<GrepMatchSpan> {
     line_lower
-        .find(&pattern_lower)
+        .find(pattern_lower)
         .map(|start| {
             vec![GrepMatchSpan {
                 start,
