@@ -87,35 +87,30 @@ impl SessionStore {
         }
 
         let entries = if tokio::fs::try_exists(&path).await.unwrap_or(false) {
-            let path_clone = path.clone();
-            tokio::task::spawn_blocking(move || -> Result<Vec<SessionEntry>> {
-                let mut entries = Vec::new();
-                let file = std::fs::File::open(&path_clone)?;
-                use std::io::BufRead;
-                let mut reader = std::io::BufReader::new(file);
-                let mut line = String::new();
+            let mut entries = Vec::new();
+            let file = tokio::fs::File::open(&path).await?;
+            use tokio::io::AsyncBufReadExt;
+            let mut reader = tokio::io::BufReader::new(file);
+            let mut line = String::new();
 
-                while reader.read_line(&mut line)? > 0 {
-                    let raw = line.trim();
-                    if raw.is_empty() {
-                        line.clear();
-                        continue;
-                    }
-
-                    match serde_json::from_str::<SessionEntry>(raw) {
-                        Ok(value) => entries.push(value),
-                        Err(parse_err) => {
-                            let legacy =
-                                serde_json::from_str::<LegacyLog>(raw).map_err(|_| parse_err)?;
-                            entries.extend(legacy.entries);
-                        }
-                    }
+            while reader.read_line(&mut line).await? > 0 {
+                let raw = line.trim();
+                if raw.is_empty() {
                     line.clear();
+                    continue;
                 }
-                Ok(entries)
-            })
-            .await
-            .map_err(|e| SessionError::InvalidPath(e.to_string()))??
+
+                match serde_json::from_str::<SessionEntry>(raw) {
+                    Ok(value) => entries.push(value),
+                    Err(parse_err) => {
+                        let legacy =
+                            serde_json::from_str::<LegacyLog>(raw).map_err(|_| parse_err)?;
+                        entries.extend(legacy.entries);
+                    }
+                }
+                line.clear();
+            }
+            entries
         } else {
             tokio::fs::OpenOptions::new()
                 .create(true)

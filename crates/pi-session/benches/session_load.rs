@@ -8,6 +8,7 @@ fn bench_session_load(c: &mut Criterion) {
 
     // Setup
     rt.block_on(async {
+        let _ = std::fs::remove_file(path);
         let mut store = SessionStore::new(path).await.unwrap();
         for _ in 0..10000 {
             store
