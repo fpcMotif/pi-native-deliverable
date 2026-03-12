@@ -395,7 +395,8 @@ mod tests {
     use std::env;
 
     #[tokio::test]
-    async fn test_checkout_nonexistent_entry() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    async fn test_checkout_nonexistent_entry() -> std::result::Result<(), Box<dyn std::error::Error>>
+    {
         let temp_dir = env::temp_dir();
         let session_path = temp_dir.join(format!("{}.jsonl", Uuid::new_v4()));
 
