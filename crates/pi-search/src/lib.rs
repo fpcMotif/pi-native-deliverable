@@ -568,7 +568,7 @@ impl SearchService {
         };
 
         let lower = query.pattern.to_lowercase();
-        let mut lower_line = String::new();
+        let mut lower_line = String::with_capacity(256);
         let mut matches = Vec::new();
         let required = start.saturating_add(limit).saturating_add(1);
         let mut has_more = false;
