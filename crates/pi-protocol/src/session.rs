@@ -240,11 +240,13 @@ mod tests {
     }
 
     #[test]
-    fn test_normalize_jsonl_nested_objects() -> Result<(), serde_json::Error> {
+    fn test_normalize_jsonl_nested_objects() {
         let raw = r#"{"z": {"d": 4, "c": 3}, "a": {"b": 2, "a": 1}}"#;
         let expected = r#"{"a":{"a":1,"b":2},"z":{"c":3,"d":4}}"#;
-        assert_eq!(normalize_jsonl(raw)?, expected);
-        Ok(())
+        assert_eq!(
+            normalize_jsonl(raw).expect("Failed to normalize JSONL"),
+            expected
+        );
     }
 
     #[test]
