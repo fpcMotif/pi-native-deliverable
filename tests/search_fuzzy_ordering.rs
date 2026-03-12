@@ -80,3 +80,26 @@ async fn fuzzy_scoring_breaks_equal_scores_alphabetically() {
         res.items[1].score
     );
 }
+
+/// The exact scoring implementation is in `pi-search` and should remain stable for these cases.
+#[tokio::test]
+async fn fuzzy_scoring_prefers_entrypoints_and_filename_bonus() {
+    let res = search_paths(
+        &[
+            "src/main.rs",
+            "crates/app/src/main.rs",
+            "src/domain/main_service.rs",
+        ],
+        "main",
+    )
+    .await;
+
+    assert!(res.items.len() >= 3);
+    assert_eq!(res.items[0].relative_path, "src/main.rs");
+    assert_eq!(res.items[1].relative_path, "crates/app/src/main.rs");
+    assert_eq!(res.items[2].relative_path, "src/domain/main_service.rs");
+
+    // Extra asserts mirroring the initial reasoning:
+    assert!(res.items[0].score > res.items[1].score);
+    assert!(res.items[1].score > res.items[2].score);
+}
