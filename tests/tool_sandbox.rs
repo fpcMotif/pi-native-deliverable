@@ -8,7 +8,6 @@ use std::path::Path;
 #[test]
 fn tool_policy_denies_env_write() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    let env_path = tmp.path().join(".env");
 
     let policy = pi_tools::Policy::safe_defaults(tmp.path());
     let tool = WriteTool;
@@ -23,10 +22,6 @@ fn tool_policy_denies_env_write() {
 
     let res = tool.execute(&call, &policy, tmp.path()).unwrap_err();
     assert!(res.to_string().contains("denied"));
-
-    // placeholder assertion - simulating writing via normal fs allows it
-    std::fs::write(&env_path, "SECRET=1").expect("write");
-    assert!(env_path.exists());
 }
 
 #[test]
