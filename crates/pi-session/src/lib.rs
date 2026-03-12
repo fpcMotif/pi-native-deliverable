@@ -395,6 +395,39 @@ mod tests {
     use std::env;
 
     #[tokio::test]
+    async fn test_checkout_existing_entry() {
+        let temp_dir = env::temp_dir();
+        let session_path = temp_dir.join(format!("{}.jsonl", Uuid::new_v4()));
+
+        let mut store = SessionStore::new(&session_path).await.unwrap();
+
+        // Append a new entry
+        let kind = SessionEntryKind::UserMessage {
+            text: "Hello".to_string(),
+        };
+        let entry_id = store.append(kind).await.unwrap();
+
+        assert_eq!(store.get_branch_head(), Some(entry_id));
+
+        // Append another entry
+        let kind2 = SessionEntryKind::UserMessage {
+            text: "World".to_string(),
+        };
+        let entry_id2 = store.append(kind2).await.unwrap();
+
+        assert_eq!(store.get_branch_head(), Some(entry_id2));
+
+        // Checkout the first entry
+        let result = store.checkout(entry_id).await;
+
+        // It should succeed and head_id should be updated
+        assert!(result);
+        assert_eq!(store.get_branch_head(), Some(entry_id));
+
+        let _ = fs::remove_file(session_path);
+    }
+
+    #[tokio::test]
     async fn test_checkout_nonexistent_entry() {
         let temp_dir = env::temp_dir();
         let session_path = temp_dir.join(format!("{}.jsonl", Uuid::new_v4()));
