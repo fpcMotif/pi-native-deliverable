@@ -80,3 +80,34 @@ async fn fuzzy_scoring_breaks_equal_scores_alphabetically() {
         res.items[1].score
     );
 }
+
+#[tokio::test]
+async fn fuzzy_scoring_prefers_entrypoints_and_filename_bonus() {
+    let res = search_paths(
+        &[
+            "src/main.rs",
+            "crates/app/src/main.rs",
+            "src/domain/main_service.rs",
+        ],
+        "main",
+    )
+    .await;
+
+    assert!(res.items.len() >= 3);
+    assert_eq!(res.items[0].relative_path, "src/main.rs");
+    assert_eq!(res.items[1].relative_path, "crates/app/src/main.rs");
+    assert_eq!(res.items[2].relative_path, "src/domain/main_service.rs");
+
+    assert!(
+        res.items[0].score > res.items[1].score,
+        "shallower entrypoint should outrank deeper match: {} vs {}",
+        res.items[0].score,
+        res.items[1].score
+    );
+    assert!(
+        res.items[1].score > res.items[2].score,
+        "entrypoint bonus should outrank filename prefix match: {} vs {}",
+        res.items[1].score,
+        res.items[2].score
+    );
+}
