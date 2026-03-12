@@ -1022,3 +1022,5 @@ mod bash_test;
 
 #[cfg(test)]
 mod policy_test;
+#[cfg(test)]
+mod registry_test;
