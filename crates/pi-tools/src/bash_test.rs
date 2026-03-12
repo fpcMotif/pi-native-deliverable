@@ -4,13 +4,11 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn test_bash_tool_output() {
-        let policy = Policy::safe_defaults(std::env::current_dir().unwrap());
+    fn test_bash_tool_output() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let policy = Policy::safe_defaults(std::env::current_dir()?);
         let call = make_call("bash", json!({"command": "echo 'hello bash'"}));
         let tool = BashTool;
-        let res = tool
-            .execute(&call, &policy, std::path::Path::new("."))
-            .unwrap();
+        let res = tool.execute(&call, &policy, std::path::Path::new("."))?;
         println!("result: {:?}", res);
         assert_eq!(res.status.as_str(), "ok");
         assert!(
@@ -18,19 +16,19 @@ mod tests {
             "stdout was: {:?}",
             res.stdout
         );
+        Ok(())
     }
 
     #[test]
-    fn test_bash_tool_timeout() {
+    fn test_bash_tool_timeout() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let mut policy = Policy::safe_defaults(std::env::current_dir().unwrap());
         policy.command_timeout_ms = 100;
         let call = make_call("bash", json!({"command": "sleep 1"}));
         let tool = BashTool;
-        let res = tool
-            .execute(&call, &policy, std::path::Path::new("."))
-            .unwrap();
+        let res = tool.execute(&call, &policy, std::path::Path::new("."))?;
         assert_eq!(res.status.as_str(), "error");
         assert_eq!(res.error, Some("command timed out".to_string()));
+        Ok(())
     }
 
     #[test]
