@@ -394,13 +394,15 @@ mod tests {
         let temp_dir = env::temp_dir();
         let session_path = temp_dir.join(format!("{}.jsonl", Uuid::new_v4()));
 
-        let mut store = SessionStore::new(&session_path).await.unwrap();
+        let mut store = SessionStore::new(&session_path)
+            .await
+            .expect("Failed to create SessionStore");
 
         // Append a new entry
         let kind = SessionEntryKind::UserMessage {
             text: "Hello".to_string(),
         };
-        let entry_id = store.append(kind).await.unwrap();
+        let entry_id = store.append(kind).await.expect("Failed to append entry");
 
         assert_eq!(store.get_branch_head(), Some(entry_id));
 
@@ -408,7 +410,7 @@ mod tests {
         let kind2 = SessionEntryKind::UserMessage {
             text: "World".to_string(),
         };
-        let entry_id2 = store.append(kind2).await.unwrap();
+        let entry_id2 = store.append(kind2).await.expect("Failed to append entry");
 
         assert_eq!(store.get_branch_head(), Some(entry_id2));
 
@@ -428,7 +430,9 @@ mod tests {
         let session_path = temp_dir.join(format!("{}.jsonl", Uuid::new_v4()));
 
         // Initialize a minimal SessionStore
-        let mut store = SessionStore::new(&session_path).await.unwrap();
+        let mut store = SessionStore::new(&session_path)
+            .await
+            .expect("Failed to create SessionStore");
 
         // Ensure head_id is initially None
         assert_eq!(store.get_branch_head(), None);
@@ -450,26 +454,28 @@ mod tests {
         let temp_dir = env::temp_dir();
         let session_path = temp_dir.join(format!("{}.jsonl", Uuid::new_v4()));
 
-        let mut store = SessionStore::new(&session_path).await.unwrap();
+        let mut store = SessionStore::new(&session_path)
+            .await
+            .expect("Failed to create SessionStore");
 
         let id1 = store
             .append(pi_protocol::session::SessionEntryKind::UserMessage {
                 text: "msg 1".into(),
             })
             .await
-            .unwrap();
+            .expect("Failed to append entry");
         let id2 = store
             .append(pi_protocol::session::SessionEntryKind::AssistantMessage {
                 text: "msg 2".into(),
             })
             .await
-            .unwrap();
+            .expect("Failed to append entry");
         let id3 = store
             .append(pi_protocol::session::SessionEntryKind::UserMessage {
                 text: "msg 3".into(),
             })
             .await
-            .unwrap();
+            .expect("Failed to append entry");
 
         // depth 0
         let pruned0 = store.prune_to_depth(0);

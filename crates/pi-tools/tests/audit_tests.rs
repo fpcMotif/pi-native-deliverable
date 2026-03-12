@@ -70,7 +70,7 @@ fn test_execute_with_audit_success() {
     let result = registry.execute_with_audit("mock_success", &call, &policy, &cwd, &mut audit);
 
     assert!(result.is_ok());
-    let res = result.unwrap();
+    let res = result.expect("execute_with_audit should succeed");
     assert_eq!(res.stdout, "success output");
     assert_eq!(res.status, ToolStatus::Ok);
 
@@ -128,5 +128,9 @@ fn test_execute_with_audit_not_found() {
     assert!(!record.allowed);
     assert_eq!(record.rule_id, "tool.missing");
     assert_eq!(record.status, ToolStatus::Denied);
-    assert!(record.error.as_ref().unwrap().contains("not found"));
+    assert!(record
+        .error
+        .as_ref()
+        .expect("expected error message")
+        .contains("not found"));
 }
