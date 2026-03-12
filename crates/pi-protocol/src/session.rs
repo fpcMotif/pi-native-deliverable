@@ -232,11 +232,13 @@ mod tests {
     }
 
     #[test]
-    fn test_normalize_jsonl_single_object() -> Result<(), serde_json::Error> {
+    fn test_normalize_jsonl_single_object() {
         let raw = r#"{"b": 2, "a": 1}"#;
         let expected = r#"{"a":1,"b":2}"#;
-        assert_eq!(normalize_jsonl(raw)?, expected);
-        Ok(())
+        assert_eq!(
+            normalize_jsonl(raw).expect("Failed to normalize JSONL"),
+            expected
+        );
     }
 
     #[test]
