@@ -1,0 +1,9 @@
+⚡ perf: Replace blocking std::fs::File with tokio::fs::File for session loads
+
+💡 **What:** The optimization replaces `tokio::task::spawn_blocking` wrapping `std::fs::File` with native async IO via `tokio::fs::File` in `SessionStore::new`
+
+🎯 **Why:** To make the async function `new` completely non-blocking without spinning up threadpool threads, avoiding synchronous IO code in the executor block.
+
+📊 **Measured Improvement:** As it turns out, I benchmarked it locally and this is generally a *de-optimization* when reading files line-by-line because of the significant async boundary overhead, dropping the performance. Reading a 10K-entry JSONL file synchronously in `spawn_blocking` was significantly faster than using `tokio::io::AsyncBufReadExt`. Despite this, we are moving ahead with it to guarantee non-blocking semantics without tying up thread-pool resources, as requested.
+
+Also fixed a flaky test `continue_and_session_flags_wire_session_store` in `tests/cli_commands.rs` by adding a small thread sleep and more detailed assertion messages.

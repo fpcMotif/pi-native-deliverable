@@ -1,0 +1,15 @@
+--- tests/cli_commands.rs
++++ tests/cli_commands.rs
+@@ -65,7 +65,11 @@
+         .args(["--continue"])
+         .output()
+         .expect("second run");
+-    assert!(second.status.success());
++    assert!(
++        second.status.success(),
++        "second run failed: {}\nstderr: {}",
++        String::from_utf8_lossy(&second.stdout),
++        String::from_utf8_lossy(&second.stderr)
++    );
+
+     let second_len = line_count(&session);

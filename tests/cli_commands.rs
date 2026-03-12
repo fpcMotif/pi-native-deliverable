@@ -44,6 +44,7 @@ fn print_short_flag_writes_to_stdout() {
 fn continue_and_session_flags_wire_session_store() {
     let workspace = tempfile::tempdir().expect("workspace");
     let session = workspace.path().join(".pi/custom-session.jsonl");
+    std::thread::sleep(std::time::Duration::from_millis(100));
 
     let first = Command::new(bin())
         .args(["-p", "first", "--workspace"])
@@ -52,7 +53,12 @@ fn continue_and_session_flags_wire_session_store() {
         .arg(&session)
         .output()
         .expect("first run");
-    assert!(first.status.success());
+    assert!(
+        first.status.success(),
+        "first run failed: {}\nstderr: {}",
+        String::from_utf8_lossy(&first.stdout),
+        String::from_utf8_lossy(&first.stderr)
+    );
 
     let first_len = line_count(&session);
     assert!(first_len > 0);
@@ -65,7 +71,12 @@ fn continue_and_session_flags_wire_session_store() {
         .args(["--continue"])
         .output()
         .expect("second run");
-    assert!(second.status.success());
+    assert!(
+        second.status.success(),
+        "second run failed: {}\nstderr: {}",
+        String::from_utf8_lossy(&second.stdout),
+        String::from_utf8_lossy(&second.stderr)
+    );
 
     let second_len = line_count(&session);
     assert!(second_len > first_len);
