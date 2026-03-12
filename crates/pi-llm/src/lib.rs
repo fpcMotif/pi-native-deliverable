@@ -357,6 +357,7 @@ pub mod openai {
             };
 
             Box::pin(
+                #[allow(clippy::redundant_async_block, clippy::redundant_closure)]
                 stream::once(async move { stream.await }).flat_map(|events| stream::iter(events)),
             )
         }

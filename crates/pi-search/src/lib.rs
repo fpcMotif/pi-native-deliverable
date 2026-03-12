@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 #![forbid(unsafe_code)]
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -37,16 +38,12 @@ pub struct SearchFilter {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum GrepMode {
+    #[default]
     PlainText,
     Regex,
     Fuzzy,
-}
-
-impl Default for GrepMode {
-    fn default() -> Self {
-        Self::PlainText
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -145,6 +142,7 @@ pub struct GrepResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct SearchServiceConfig {
     pub workspace_root: PathBuf,
     pub max_file_size: u64,
@@ -849,7 +847,7 @@ impl SearchService {
 }
 
 fn matches_scope(entry: &IndexedFile, scope: Option<&str>) -> bool {
-    scope.is_none_or(|scope| scope_is_prefix(&entry.relative_path, scope))
+    scope.map_or(true, |scope| scope_is_prefix(&entry.relative_path, scope))
 }
 
 fn matches_filters(entry: &IndexedFile, filters: &[SearchFilter], query: &str) -> bool {
@@ -858,14 +856,13 @@ fn matches_filters(entry: &IndexedFile, filters: &[SearchFilter], query: &str) -
     }
 
     for filter in filters {
-        let ext_ok = filter
-            .extension
-            .as_ref()
-            .is_none_or(|ext| entry.relative_path.ends_with(&format!(".{ext}")));
+        let ext_ok = filter.extension.as_ref().map_or(true, |ext| {
+            entry.relative_path.ends_with(&format!(".{ext}"))
+        });
         let scope_ok = filter
             .path_prefix
             .as_ref()
-            .is_none_or(|prefix| scope_is_prefix(&entry.relative_path, prefix));
+            .map_or(true, |prefix| scope_is_prefix(&entry.relative_path, prefix));
         if !ext_ok || !scope_ok {
             return false;
         }
@@ -931,6 +928,7 @@ fn collect_fuzzy_spans(line: &str, pattern: &str) -> Vec<GrepMatchSpan> {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
 
@@ -1098,7 +1096,7 @@ pub fn decode_token(token: &str) -> SearchResult<usize> {
             .try_into()
             .map_err(|_| SearchError::InvalidToken("invalid token payload".to_string()))?,
     );
-    Ok(value
+    value
         .try_into()
-        .map_err(|_| SearchError::InvalidToken("token overflow".to_string()))?)
+        .map_err(|_| SearchError::InvalidToken("token overflow".to_string()))
 }
