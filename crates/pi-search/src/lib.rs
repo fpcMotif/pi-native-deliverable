@@ -596,10 +596,11 @@ impl SearchService {
                 }
             }
 
-            let bytes = match std::fs::read(&resolved_path) {
-                Ok(value) => value,
-                Err(_) => continue,
-            };
+            let bytes =
+                match tokio::task::spawn_blocking(move || std::fs::read(&resolved_path)).await {
+                    Ok(Ok(value)) => value,
+                    _ => continue,
+                };
             if bytes.contains(&0) {
                 continue;
             }
