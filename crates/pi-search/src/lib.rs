@@ -455,7 +455,7 @@ impl SearchService {
                 .get(&entry.absolute_path)
                 .cloned()
                 .or_else(|| entry.git_status.clone());
-            let bonus = score_filename_bonus(&entry.relative_path, &needle)
+            let bonus = score_filename_bonus(&entry.relative_path_lc, &needle)
                 + score_extension_bonus(&entry.absolute_path)
                 + score_entrypoint_bonus(&entry.relative_path)
                 + score_git_bonus(git_status.as_deref())
@@ -957,12 +957,11 @@ fn score_path_match(path_lower: &str, query_lower: &str) -> f64 {
     normalized_levenshtein(path_lower, query_lower)
 }
 
-fn score_filename_bonus(path: &str, query: &str) -> f64 {
-    let filename = Path::new(path)
+fn score_filename_bonus(path_lower: &str, query: &str) -> f64 {
+    let filename = Path::new(path_lower)
         .file_name()
         .and_then(|value| value.to_str())
-        .unwrap_or("")
-        .to_lowercase();
+        .unwrap_or("");
     if filename == query {
         0.6
     } else if filename.starts_with(query) {
