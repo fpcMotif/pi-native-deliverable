@@ -110,7 +110,9 @@ impl SessionStore {
                     }
                 }
                 Ok(entries)
-            }).await.map_err(std::io::Error::other)??
+            })
+            .await
+            .map_err(std::io::Error::other)??
         } else {
             tokio::fs::OpenOptions::new()
                 .create(true)
