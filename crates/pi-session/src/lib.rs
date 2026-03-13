@@ -87,30 +87,30 @@ impl SessionStore {
         }
 
         let entries = if tokio::fs::try_exists(&path).await.unwrap_or(false) {
-            let mut entries = Vec::new();
-            let file = tokio::fs::File::open(&path).await?;
-            use tokio::io::AsyncBufReadExt;
-            let mut reader = tokio::io::BufReader::new(file);
-            let mut line = String::new();
+            let path_clone = path.clone();
+            tokio::task::spawn_blocking(move || -> Result<Vec<SessionEntry>> {
+                let mut entries = Vec::new();
+                let file = std::fs::File::open(&path_clone)?;
+                let reader = std::io::BufReader::new(file);
+                use std::io::BufRead;
+                for line in reader.lines() {
+                    let line = line?;
+                    let raw = line.trim();
+                    if raw.is_empty() {
+                        continue;
+                    }
 
-            while reader.read_line(&mut line).await? > 0 {
-                let raw = line.trim();
-                if raw.is_empty() {
-                    line.clear();
-                    continue;
-                }
-
-                match serde_json::from_str::<SessionEntry>(raw) {
-                    Ok(value) => entries.push(value),
-                    Err(parse_err) => {
-                        let legacy =
-                            serde_json::from_str::<LegacyLog>(raw).map_err(|_| parse_err)?;
-                        entries.extend(legacy.entries);
+                    match serde_json::from_str::<SessionEntry>(raw) {
+                        Ok(value) => entries.push(value),
+                        Err(parse_err) => {
+                            let legacy =
+                                serde_json::from_str::<LegacyLog>(raw).map_err(|_| parse_err)?;
+                            entries.extend(legacy.entries);
+                        }
                     }
                 }
-                line.clear();
-            }
-            entries
+                Ok(entries)
+            }).await.map_err(std::io::Error::other)??
         } else {
             tokio::fs::OpenOptions::new()
                 .create(true)
