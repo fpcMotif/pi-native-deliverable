@@ -32,6 +32,7 @@ pub struct Agent {
     state: Arc<Mutex<RunState>>,
     abort_tx: mpsc::Sender<()>,
     abort_rx: Arc<tokio::sync::Mutex<mpsc::Receiver<()>>>,
+    session_usage_cache: Mutex<UsageTotals>,
 }
 
 #[derive(Debug)]
@@ -123,12 +124,19 @@ impl std::fmt::Display for AgentError {
 impl Agent {
     pub async fn new(config: AgentConfig) -> Self {
         let (sender, receiver) = mpsc::channel(16);
-        Self {
+        let agent = Self {
             config,
             state: Arc::new(Mutex::new(RunState::Idle)),
             abort_tx: sender,
             abort_rx: Arc::new(tokio::sync::Mutex::new(receiver)),
+            session_usage_cache: Mutex::new(UsageTotals::default()),
+        };
+        let initial_totals = agent.compute_session_usage_totals().await.unwrap_or_default();
+        {
+            let mut cache = agent.session_usage_cache.lock().await;
+            *cache = initial_totals;
         }
+        agent
     }
 
     pub async fn run_command_bus(self: Arc<Self>) -> CommandBus {
@@ -230,6 +238,10 @@ impl Agent {
 
     async fn new_session(&self) -> Result<Vec<ServerEvent>> {
         {
+            let mut cache = self.session_usage_cache.lock().await;
+            *cache = UsageTotals::default();
+        }
+        {
             let mut store = self.config.session_store.lock().await;
             store
                 .reset()
@@ -268,6 +280,11 @@ impl Agent {
         {
             let mut store = self.config.session_store.lock().await;
             *store = new_store;
+        }
+        let initial_totals = self.compute_session_usage_totals().await.unwrap_or_default();
+        {
+            let mut cache = self.session_usage_cache.lock().await;
+            *cache = initial_totals;
         }
 
         Ok(vec![ServerEvent::State {
@@ -484,6 +501,10 @@ impl Agent {
                 } => {
                     turn_usage.add_usage(input_tokens, output_tokens, cached_tokens, cost_usd);
                     session_usage.add_usage(input_tokens, output_tokens, cached_tokens, cost_usd);
+                    {
+                        let mut cache = self.session_usage_cache.lock().await;
+                        *cache = session_usage;
+                    }
                     self.append_usage_metadata(
                         &provider_name,
                         &model_name,
@@ -590,6 +611,10 @@ impl Agent {
     }
 
     async fn session_usage_totals(&self) -> Result<UsageTotals> {
+        Ok(*self.session_usage_cache.lock().await)
+    }
+
+    async fn compute_session_usage_totals(&self) -> Result<UsageTotals> {
         let store = self.config.session_store.lock().await;
         let mut totals = UsageTotals::default();
         for entry in &store.log.entries {
