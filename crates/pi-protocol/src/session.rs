@@ -272,4 +272,72 @@ mod tests {
         let raw = r#"{"a": 1"#;
         assert!(normalize_jsonl(raw).is_err());
     }
+
+    #[test]
+    fn test_session_log_children_empty() {
+        let log = SessionLog::default();
+        let children = log.children();
+        assert!(children.is_empty());
+        let roots = log.roots();
+        assert!(roots.is_empty());
+    }
+
+    #[test]
+    fn test_session_log_tree_structure() {
+        let mut log = SessionLog::default();
+        let root = SessionEntry::new(
+            SessionEntryKind::UserMessage {
+                text: "root".into(),
+            },
+            None,
+        );
+        let root_id = root.entry_id;
+        log.append_entry(root);
+
+        let child1 = SessionEntry::new(
+            SessionEntryKind::AssistantMessage {
+                text: "child1".into(),
+            },
+            Some(root_id),
+        );
+        let child1_id = child1.entry_id;
+        log.append_entry(child1);
+
+        let child2 = SessionEntry::new(
+            SessionEntryKind::AssistantMessage {
+                text: "child2".into(),
+            },
+            Some(root_id),
+        );
+        let child2_id = child2.entry_id;
+        log.append_entry(child2);
+
+        let grandchild = SessionEntry::new(
+            SessionEntryKind::UserMessage {
+                text: "grandchild".into(),
+            },
+            Some(child1_id),
+        );
+        let grandchild_id = grandchild.entry_id;
+        log.append_entry(grandchild);
+
+        let children = log.children();
+        // root has child1 and child2
+        assert_eq!(children.get(&root_id).unwrap().len(), 2);
+        assert!(children.get(&root_id).unwrap().contains(&child1_id));
+        assert!(children.get(&root_id).unwrap().contains(&child2_id));
+
+        // child1 has grandchild
+        assert_eq!(children.get(&child1_id).unwrap(), &vec![grandchild_id]);
+
+        // child2 and grandchild have no children
+        assert!(!children.contains_key(&child2_id));
+        assert!(!children.contains_key(&grandchild_id));
+
+        let roots = log.roots();
+        // roots() currently returns leaves (entries that are NOT parents)
+        assert_eq!(roots.len(), 2);
+        assert!(roots.contains(&child2_id));
+        assert!(roots.contains(&grandchild_id));
+    }
 }
