@@ -83,6 +83,7 @@ fn percentile_nanos(durations: &mut [u128], percentile: f64) -> u128 {
 }
 
 #[test]
+#[cfg_attr(debug_assertions, ignore)]
 fn grep_first_page_stays_within_budget() {
     let file_count = read_or_default("PI_BENCH_ASSERT_GREP_FILES", DEFAULT_GREP_FILES);
     let line_count = read_or_default("PI_BENCH_ASSERT_GREP_LINES", DEFAULT_GREP_LINES);
@@ -140,6 +141,7 @@ fn grep_first_page_stays_within_budget() {
 }
 
 #[test]
+#[cfg_attr(debug_assertions, ignore)]
 fn find_files_stays_within_budget() {
     let file_count = read_or_default("PI_BENCH_ASSERT_FIND_FILES", DEFAULT_FIND_FILES);
     let budget_ms = read_or_default_u64("PI_BENCH_ASSERT_FIND_BUDGET_MS", DEFAULT_FIND_BUDGET_MS);

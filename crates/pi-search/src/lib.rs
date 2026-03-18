@@ -541,28 +541,21 @@ impl SearchService {
 
         enum Matcher {
             Regex(Regex),
+            PlainText,
             Fuzzy,
         }
 
         let mut warning = None;
         let matcher = match query.mode {
             GrepMode::Fuzzy => Matcher::Fuzzy,
-            GrepMode::PlainText => Matcher::Regex(
-                regex::RegexBuilder::new(&regex::escape(&query.pattern))
-                    .case_insensitive(true)
-                    .build()?,
-            ),
+            GrepMode::PlainText => Matcher::PlainText,
             GrepMode::Regex => match Regex::new(&query.pattern) {
                 Ok(regex) => Matcher::Regex(regex),
                 Err(err) => {
                     warning = Some(format!(
                         "invalid regex pattern: {err}. Falling back to plain text matching."
                     ));
-                    Matcher::Regex(
-                        regex::RegexBuilder::new(&regex::escape(&query.pattern))
-                            .case_insensitive(true)
-                            .build()?,
-                    )
+                    Matcher::PlainText
                 }
             },
         };
@@ -615,6 +608,28 @@ impl SearchService {
             for (line_idx, line) in lines.iter().enumerate() {
                 let line_match_spans = match &matcher {
                     Matcher::Regex(regex) => collect_match_spans(line, regex),
+
+                    Matcher::PlainText => {
+                        lower_line.clear();
+                        if line.is_ascii() {
+                            lower_line.push_str(line);
+                            lower_line.make_ascii_lowercase();
+                        } else {
+                            for c in line.chars() {
+                                for lc in c.to_lowercase() {
+                                    lower_line.push(lc);
+                                }
+                            }
+                        }
+
+                        lower_line
+                            .match_indices(&lower)
+                            .map(|(start, match_str)| GrepMatchSpan {
+                                start,
+                                end: start + match_str.len(),
+                            })
+                            .collect()
+                    }
 
                     Matcher::Fuzzy => {
                         let line_len = line.len();
