@@ -1161,4 +1161,75 @@ mod tests {
             Err(SearchError::InvalidToken(_))
         ));
     }
+
+    #[tokio::test]
+    async fn test_rebuild_index_file_walking() {
+        use std::fs;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+
+        // Ensure ignore crate respects gitignore by creating a dummy .git dir
+        fs::create_dir(root.join(".git")).unwrap();
+
+        // Create normal file
+        fs::write(root.join("normal.txt"), "hello").unwrap();
+
+        // Create hidden file
+        fs::write(root.join(".hidden_file.txt"), "hidden").unwrap();
+
+        // Create ignored file and gitignore
+        fs::write(
+            root.join(".gitignore"),
+            "ignored.txt
+",
+        )
+        .unwrap();
+        fs::write(root.join("ignored.txt"), "ignored").unwrap();
+
+        // Create a sub-directory
+        let subdir = root.join("subdir");
+        fs::create_dir(&subdir).unwrap();
+        fs::write(subdir.join("nested.txt"), "nested").unwrap();
+
+        // Large file
+        let large_file_path = root.join("large.txt");
+        let large_data = vec![b'x'; 200];
+        fs::write(&large_file_path, large_data).unwrap();
+
+        let config = SearchServiceConfig {
+            workspace_root: root.to_path_buf(),
+            use_git_status: false,
+            watcher_enabled: false,
+            index_path: None,
+            max_file_size: 100, // Filter out files > 100 bytes
+            ..Default::default()
+        };
+
+        let service = SearchService::new(config).await.unwrap();
+
+        // Ensure index is rebuilt
+        service.rebuild_index().await.unwrap();
+
+        let index_guard = service.index.read().await;
+
+        // Normal file should be found
+        assert!(index_guard.iter().any(|f| f.relative_path == "normal.txt"));
+        // Hidden file should be found because hidden(false) in WalkBuilder
+        assert!(index_guard
+            .iter()
+            .any(|f| f.relative_path == ".hidden_file.txt"));
+        // Nested file should be found
+        assert!(index_guard
+            .iter()
+            .any(|f| f.relative_path == "subdir/nested.txt"
+                || f.relative_path == "subdir\nested.txt"));
+
+        // Ignored file should not be found
+        assert!(!index_guard.iter().any(|f| f.relative_path == "ignored.txt"));
+
+        // Large file should be skipped
+        assert!(!index_guard.iter().any(|f| f.relative_path == "large.txt"));
+    }
 }
