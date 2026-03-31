@@ -662,7 +662,7 @@ impl Tool for BashTool {
         })
     }
 
-    fn execute(&self, call: &ToolCall, policy: &Policy, _cwd: &Path) -> Result<ToolCallResult> {
+    fn execute(&self, call: &ToolCall, policy: &Policy, cwd: &Path) -> Result<ToolCallResult> {
         let command = read_arg::<String>(call, "command")?;
         if is_dangerous_command(&command) {
             return Err(ToolError::denied("command blocked by policy"));
@@ -675,12 +675,76 @@ impl Tool for BashTool {
             .unwrap_or(policy.command_timeout_ms)
             .min(policy.command_timeout_ms);
 
-        let mut child = Command::new("sh");
-        child.arg("-lc").arg(command);
+        let workspace = policy.workspace_root.canonicalize().unwrap_or_else(|_| policy.workspace_root.clone());
+        let workspace_str = workspace.to_string_lossy();
 
-        let output = match execute_with_timeout(child, timeout_ms)? {
-            Some(value) => value,
-            None => {
+        #[cfg(target_os = "linux")]
+        let child = {
+            if std::process::Command::new("bwrap").arg("--version").output().is_err() {
+                return Err(ToolError::denied("bwrap is required for secure bash execution on Linux"));
+            }
+
+            let mut c = Command::new("bwrap");
+            c.args([
+                "--ro-bind", "/", "/",
+                "--dev", "/dev",
+                "--proc", "/proc",
+                "--tmpfs", "/tmp",
+                "--unshare-pid",
+                "--unshare-ipc",
+                "--unshare-uts",
+                "--unshare-cgroup",
+                "--die-with-parent",
+                "--chdir", cwd.to_string_lossy().as_ref(),
+            ]);
+
+            // Hide sensitive host data
+            if std::path::Path::new("/etc/shadow").exists() {
+                c.args(["--ro-bind", "/dev/null", "/etc/shadow"]);
+            }
+            if let Some(home) = std::env::var_os("HOME") {
+                let home_path = std::path::Path::new(&home);
+                if home_path.exists() && !workspace.starts_with(home_path) {
+                    c.arg("--tmpfs").arg(home_path.to_string_lossy().as_ref());
+                }
+            }
+            let root_path = std::path::Path::new("/root");
+            if root_path.exists() && !workspace.starts_with(root_path) {
+                c.arg("--tmpfs").arg("/root");
+            }
+
+            if workspace_str != "/" {
+                c.args(["--bind", workspace_str.as_ref(), workspace_str.as_ref()]);
+            }
+
+            c.args(["--", "sh", "-lc", &command]);
+            c
+        };
+
+        #[cfg(target_os = "macos")]
+        let mut child = {
+            if std::process::Command::new("sandbox-exec").arg("-V").output().is_err() {
+                return Err(ToolError::denied("sandbox-exec is required for secure bash execution on macOS"));
+            }
+
+            let mut c = Command::new("sandbox-exec");
+            let profile = format!(
+                "(version 1)\n(allow default)\n(deny file-read* file-write* (subpath \"/Users\") (subpath \"/private/var/root\"))\n(allow file-read* file-write* (subpath \"{}\"))\n(allow file-read* file-write* (subpath \"/private/tmp\"))\n",
+                workspace_str
+            );
+            c.args(["-p", &profile, "sh", "-lc", &command]);
+            c.current_dir(cwd);
+            c
+        };
+
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let child = {
+            return Err(ToolError::denied("Secure bash execution is not supported on this platform"));
+        };
+
+        let output = match execute_with_timeout(child, timeout_ms) {
+            Ok(Some(value)) => value,
+            Ok(None) => {
                 return Ok(ToolCallResult {
                     stdout: String::new(),
                     status: ToolStatus::Error,
@@ -689,6 +753,7 @@ impl Tool for BashTool {
                     metadata: BTreeMap::from_iter([("timed_out".to_string(), json!(true))]),
                 });
             }
+            Err(e) => return Err(ToolError::Error(format!("failed to execute command: {}", e))),
         };
 
         let (stdout_raw, stderr_raw) = (
