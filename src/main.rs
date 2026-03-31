@@ -100,30 +100,53 @@ enum Mode {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
-    if let Some(Command::Protocol {
-        command: ProtocolCommand::Schema { out },
-    }) = cli.command
-    {
-        run_protocol_schema(out).await;
+    let workspace = resolve_workspace(&cli)?;
+
+    if handle_protocol_schema(&cli).await {
         return Ok(());
     }
 
-    let workspace = match cli.workspace {
-        Some(ref path) => path.clone(),
-        None => std::env::current_dir()?,
-    };
-    let (agent, mut catalog, search_service) = create_agent(&cli, workspace.clone()).await?;
+    let (agent, catalog, search_service) = create_agent(&cli, workspace.clone()).await?;
 
     if handle_command(&cli, &workspace, search_service.clone()).await? {
         return Ok(());
     }
 
+    run_agent_mode(&cli, agent, workspace, catalog, search_service).await
+}
+
+fn resolve_workspace(cli: &Cli) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    match &cli.workspace {
+        Some(path) => Ok(path.clone()),
+        None => Ok(std::env::current_dir()?),
+    }
+}
+
+async fn handle_protocol_schema(cli: &Cli) -> bool {
+    if let Some(Command::Protocol {
+        command: ProtocolCommand::Schema { out },
+    }) = &cli.command
+    {
+        run_protocol_schema(out.clone()).await;
+        true
+    } else {
+        false
+    }
+}
+
+async fn run_agent_mode(
+    cli: &Cli,
+    agent: Agent,
+    workspace: std::path::PathBuf,
+    mut catalog: Catalog,
+    search_service: std::sync::Arc<SearchService>,
+) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(prompt) = cli.print_prompt.as_deref().or(cli.prompt.as_deref()) {
         run_prompt_once(&agent, prompt).await;
         return Ok(());
     }
 
-    match cli.mode.unwrap_or(Mode::Interactive) {
+    match cli.mode.clone().unwrap_or(Mode::Interactive) {
         Mode::Rpc => {
             let _ = run_rpc(&agent).await;
         }
