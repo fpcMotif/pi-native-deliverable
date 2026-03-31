@@ -451,6 +451,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_prune_to_depth_large() {
+        let temp_dir = std::env::temp_dir();
+        let session_path = temp_dir.join(format!("{}.jsonl", Uuid::new_v4()));
+
+        let mut store = SessionStore::new(&session_path).await.unwrap();
+
+        let mut ids = Vec::new();
+        for i in 0..10 {
+            let kind = pi_protocol::session::SessionEntryKind::UserMessage {
+                text: format!("msg {i}"),
+            };
+            let entry_id = store.append(kind).await.unwrap();
+            ids.push(entry_id);
+        }
+
+        let pruned = store.prune_to_depth(5);
+
+        assert_eq!(pruned.len(), 5);
+
+        let mut expected = Vec::new();
+        let mut current = store.get_branch_head();
+        for _ in 0..5 {
+            if let Some(id) = current {
+                expected.push(id);
+                current = store
+                    .log
+                    .entries
+                    .iter()
+                    .find(|e| e.entry_id == id)
+                    .and_then(|e| e.parent_id);
+            }
+        }
+        assert_eq!(pruned, expected);
+
+        let _ = std::fs::remove_file(session_path);
+    }
+
+    #[tokio::test]
     async fn test_prune_to_depth() {
         let temp_dir = env::temp_dir();
         let session_path = temp_dir.join(format!("{}.jsonl", Uuid::new_v4()));
