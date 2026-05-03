@@ -906,14 +906,18 @@ impl Tool for LsTool {
             return Err(ToolError::Error("ls target is not a directory".to_string()));
         }
 
-        let mut names = Vec::new();
-        for entry in fs::read_dir(&normalized)? {
-            let entry = entry?;
-            if let Some(name) = entry.file_name().to_str() {
-                names.push(name.to_string());
+        let names = tokio::task::block_in_place(|| -> io::Result<Vec<String>> {
+            let mut names = Vec::new();
+            for entry in fs::read_dir(&normalized)? {
+                let entry = entry?;
+                if let Some(name) = entry.file_name().to_str() {
+                    names.push(name.to_string());
+                }
             }
-        }
-        names.sort_unstable();
+            names.sort_unstable();
+            Ok(names)
+        })
+        .map_err(ToolError::from)?;
 
         Ok(ToolCallResult {
             stdout: names.join("\n"),
