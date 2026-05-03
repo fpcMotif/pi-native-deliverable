@@ -310,12 +310,6 @@ fn print_print_response(events: &[ServerEvent]) {
     }
 }
 
-#[allow(dead_code)]
-async fn apply_startup_session_controls(_agent: &Agent, _cli: &Cli) {
-    // Session controls (open_by_path, branch_from_turn, continue_last)
-    // are handled via interactive slash commands and CLI flags at agent construction time.
-}
-
 async fn run_protocol_schema(_out: PathBuf) {
     #[cfg(feature = "protocol-schema")]
     {
