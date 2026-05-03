@@ -1161,4 +1161,149 @@ mod tests {
             Err(SearchError::InvalidToken(_))
         ));
     }
+
+    #[tokio::test]
+    async fn find_files_pagination_works() {
+        let service = std::sync::Arc::new(SearchService {
+            config: SearchServiceConfig::default(),
+            index: RwLock::new(vec![
+                IndexedFile {
+                    relative_path: "file1.rs".to_string(),
+                    relative_path_lc: "file1.rs".to_string(),
+                    absolute_path: PathBuf::from("/mock/file1.rs"),
+                    size_bytes: 10,
+                    mtime_ms: 100,
+                    frecency: 0,
+                    git_status: None,
+                },
+                IndexedFile {
+                    relative_path: "file2.rs".to_string(),
+                    relative_path_lc: "file2.rs".to_string(),
+                    absolute_path: PathBuf::from("/mock/file2.rs"),
+                    size_bytes: 10,
+                    mtime_ms: 100,
+                    frecency: 0,
+                    git_status: None,
+                },
+                IndexedFile {
+                    relative_path: "file3.rs".to_string(),
+                    relative_path_lc: "file3.rs".to_string(),
+                    absolute_path: PathBuf::from("/mock/file3.rs"),
+                    size_bytes: 10,
+                    mtime_ms: 100,
+                    frecency: 0,
+                    git_status: None,
+                },
+                IndexedFile {
+                    relative_path: "file4.rs".to_string(),
+                    relative_path_lc: "file4.rs".to_string(),
+                    absolute_path: PathBuf::from("/mock/file4.rs"),
+                    size_bytes: 10,
+                    mtime_ms: 100,
+                    frecency: 0,
+                    git_status: None,
+                },
+                IndexedFile {
+                    relative_path: "file5.rs".to_string(),
+                    relative_path_lc: "file5.rs".to_string(),
+                    absolute_path: PathBuf::from("/mock/file5.rs"),
+                    size_bytes: 10,
+                    mtime_ms: 100,
+                    frecency: 0,
+                    git_status: None,
+                },
+            ]),
+            git_index: RwLock::new(HashMap::new()),
+        });
+
+        // 1. Initial request without token
+        let query1 = SearchQuery {
+            text: "file".to_string(),
+            scope: None,
+            filters: vec![],
+            limit: 2,
+            token: None,
+            offset: 0,
+        };
+
+        let response1 = service.find_files(&query1).await.unwrap();
+        assert_eq!(response1.items.len(), 2);
+        assert!(response1.token.is_some());
+        assert_eq!(response1.items[0].relative_path, "file1.rs");
+        assert_eq!(response1.items[1].relative_path, "file2.rs");
+
+        // 2. Second request with token
+        let query2 = SearchQuery {
+            text: "file".to_string(),
+            scope: None,
+            filters: vec![],
+            limit: 2,
+            token: response1.token.clone(),
+            offset: 0, // must be 0 when using token
+        };
+
+        let response2 = service.find_files(&query2).await.unwrap();
+        assert_eq!(response2.items.len(), 2);
+        assert!(response2.token.is_some());
+        assert_ne!(response1.token, response2.token);
+        assert_eq!(response2.items[0].relative_path, "file3.rs");
+        assert_eq!(response2.items[1].relative_path, "file4.rs");
+
+        // 3. Third request with second token
+        let query3 = SearchQuery {
+            text: "file".to_string(),
+            scope: None,
+            filters: vec![],
+            limit: 2,
+            token: response2.token.clone(),
+            offset: 0,
+        };
+
+        let response3 = service.find_files(&query3).await.unwrap();
+        assert_eq!(response3.items.len(), 1);
+        assert!(response3.token.is_none());
+        assert_eq!(response3.items[0].relative_path, "file5.rs");
+    }
+
+    #[tokio::test]
+    async fn find_files_rejects_token_and_offset() {
+        let service = std::sync::Arc::new(SearchService {
+            config: SearchServiceConfig::default(),
+            index: RwLock::new(vec![]),
+            git_index: RwLock::new(HashMap::new()),
+        });
+
+        let query = SearchQuery {
+            text: "test".to_string(),
+            scope: None,
+            filters: vec![],
+            limit: 10,
+            token: Some("some_token".to_string()),
+            offset: 5, // Non-zero offset with token
+        };
+
+        let result = service.find_files(&query).await;
+        assert!(matches!(result, Err(SearchError::InvalidToken(_))));
+    }
+
+    #[tokio::test]
+    async fn find_files_rejects_invalid_token() {
+        let service = std::sync::Arc::new(SearchService {
+            config: SearchServiceConfig::default(),
+            index: RwLock::new(vec![]),
+            git_index: RwLock::new(HashMap::new()),
+        });
+
+        let query = SearchQuery {
+            text: "test".to_string(),
+            scope: None,
+            filters: vec![],
+            limit: 10,
+            token: Some("invalid-base64-token!!".to_string()),
+            offset: 0,
+        };
+
+        let result = service.find_files(&query).await;
+        assert!(matches!(result, Err(SearchError::InvalidToken(_))));
+    }
 }
