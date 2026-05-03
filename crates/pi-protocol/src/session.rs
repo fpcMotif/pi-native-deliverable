@@ -272,4 +272,91 @@ mod tests {
         let raw = r#"{"a": 1"#;
         assert!(normalize_jsonl(raw).is_err());
     }
+
+    #[test]
+    fn test_load_jsonl_valid() -> io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let file_path = dir.path().join("valid.jsonl");
+
+        let entry1 = SessionEntry::new(
+            SessionEntryKind::UserMessage {
+                text: "hello".to_string(),
+            },
+            None,
+        );
+        let entry2 = SessionEntry::new(
+            SessionEntryKind::AssistantMessage {
+                text: "hi".to_string(),
+            },
+            Some(entry1.entry_id),
+        );
+
+        let mut log = SessionLog::default();
+        log.append_entry(entry1.clone());
+        log.append_entry(entry2.clone());
+
+        let jsonl = log.to_jsonl_string().unwrap();
+        std::fs::write(&file_path, jsonl)?;
+
+        let loaded = SessionLog::load_jsonl(&file_path)?;
+        assert_eq!(loaded.entries.len(), 2);
+        assert_eq!(loaded.entries[0].entry_id, entry1.entry_id);
+        assert_eq!(loaded.entries[1].entry_id, entry2.entry_id);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_load_jsonl_empty_lines() -> io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let file_path = dir.path().join("empty_lines.jsonl");
+
+        let entry1 = SessionEntry::new(
+            SessionEntryKind::UserMessage {
+                text: "hello".to_string(),
+            },
+            None,
+        );
+        let entry_json = serde_json::to_string(&entry1).unwrap();
+
+        let jsonl = format!(
+            "
+
+{}
+
+",
+            entry_json
+        );
+        std::fs::write(&file_path, jsonl)?;
+
+        let loaded = SessionLog::load_jsonl(&file_path)?;
+        assert_eq!(loaded.entries.len(), 1);
+        assert_eq!(loaded.entries[0].entry_id, entry1.entry_id);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_load_jsonl_invalid_json() -> io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let file_path = dir.path().join("invalid.jsonl");
+
+        std::fs::write(&file_path, r#"{"kind":"system_prompt_set""#)?;
+
+        let result = SessionLog::load_jsonl(&file_path);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_load_jsonl_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("missing.jsonl");
+
+        let result = SessionLog::load_jsonl(&file_path);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
+    }
 }
