@@ -177,19 +177,6 @@ struct IndexedFile {
     git_status: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
-struct PersistedIndex {
-    version: u32,
-    workspace_root: PathBuf,
-    created_at_ms: u64,
-    items: Vec<IndexedFile>,
-}
-
-#[allow(dead_code)]
-const INDEX_FORMAT_VERSION: u32 = 1;
-const INDEX_CACHE_FILE: &str = ".pi/cache/search-index-v1.json";
-
 #[derive(Debug)]
 pub struct SearchService {
     config: SearchServiceConfig,
@@ -198,10 +185,7 @@ pub struct SearchService {
 }
 
 impl SearchService {
-    pub async fn new(mut config: SearchServiceConfig) -> SearchResult<std::sync::Arc<Self>> {
-        if config.index_path.is_none() {
-            config.index_path = Some(config.workspace_root.join(INDEX_CACHE_FILE));
-        }
+    pub async fn new(config: SearchServiceConfig) -> SearchResult<std::sync::Arc<Self>> {
         let service = std::sync::Arc::new(Self {
             config,
             index: RwLock::new(Vec::new()),
@@ -799,92 +783,7 @@ impl SearchService {
                 .then(left.mtime_ms.cmp(&right.mtime_ms))
         });
         drop(index);
-        self.health_check_index().await?;
-        self.persist_index().await
-    }
-
-    #[allow(dead_code)]
-    async fn load_index_from_disk(&self) -> SearchResult<bool> {
-        let path = self.index_cache_path();
-        if !path.exists() {
-            return Ok(false);
-        }
-
-        let bytes = match tokio::fs::read(&path).await {
-            Ok(v) => v,
-            Err(_) => return Ok(false),
-        };
-        let persisted: PersistedIndex = match serde_json::from_slice(&bytes) {
-            Ok(v) => v,
-            Err(_) => return Ok(false),
-        };
-
-        if persisted.version != INDEX_FORMAT_VERSION
-            || persisted.workspace_root != self.config.workspace_root
-        {
-            return Ok(false);
-        }
-        let mut index = self.index.write().await;
-        let mut items = persisted.items;
-        for item in items.iter_mut() {
-            item.relative_path_lc = item.relative_path.to_lowercase();
-        }
-        *index = items;
-        drop(index);
-        if self.health_check_index().await.is_err() {
-            return Ok(false);
-        }
-        Ok(true)
-    }
-
-    #[allow(dead_code)]
-    async fn persist_index(&self) -> SearchResult<()> {
-        let path = self.index_cache_path();
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-        let index = self.index.read().await.clone();
-        let payload = PersistedIndex {
-            version: INDEX_FORMAT_VERSION,
-            workspace_root: self.config.workspace_root.clone(),
-            created_at_ms: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64,
-            items: index,
-        };
-        tokio::fs::write(path, serde_json::to_vec(&payload)?).await?;
         Ok(())
-    }
-
-    #[allow(dead_code)]
-    async fn health_check_index(&self) -> SearchResult<()> {
-        let index = self.index.read().await;
-        for pair in index.windows(2) {
-            if pair[0].relative_path > pair[1].relative_path {
-                return Err(SearchError::InvalidToken(
-                    "index ordering invalid".to_string(),
-                ));
-            }
-        }
-
-        let missing = index
-            .iter()
-            .take(64)
-            .filter(|entry| !entry.absolute_path.exists())
-            .count();
-        if missing > 0 {
-            return Err(SearchError::InvalidToken(
-                "index points to missing files".to_string(),
-            ));
-        }
-
-        Ok(())
-    }
-
-    #[allow(dead_code)]
-    fn index_cache_path(&self) -> PathBuf {
-        self.config.workspace_root.join(INDEX_CACHE_FILE)
     }
 }
 

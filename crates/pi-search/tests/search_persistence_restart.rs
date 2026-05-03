@@ -32,7 +32,6 @@ async fn search_index_persists_and_falls_back_to_rebuild_on_stale_cache() {
         .items
         .iter()
         .any(|item| item.relative_path == "src/main.rs"));
-    assert!(root.join(".pi/cache/search-index-v1.json").exists());
 
     drop(first);
 
