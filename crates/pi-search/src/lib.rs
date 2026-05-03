@@ -7,6 +7,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 use strsim::normalized_levenshtein;
@@ -73,12 +74,12 @@ pub struct SearchStats {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchItem {
-    pub relative_path: String,
-    pub absolute_path: PathBuf,
+    pub relative_path: Arc<str>,
+    pub absolute_path: Arc<Path>,
     pub score: f64,
     pub mtime_ms: u64,
     pub frecency: u32,
-    pub git_status: Option<String>,
+    pub git_status: Option<Arc<str>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,7 +97,7 @@ pub struct GrepMatchSpan {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GrepMatch {
-    pub path: String,
+    pub path: Arc<str>,
     pub line_number: usize,
     pub byte_offset: usize,
     pub line: String,
@@ -166,15 +167,15 @@ impl Default for SearchServiceConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct IndexedFile {
-    relative_path: String,
+    relative_path: Arc<str>,
     #[serde(skip)]
     #[serde(default)]
     relative_path_lc: String,
-    absolute_path: PathBuf,
+    absolute_path: Arc<Path>,
     size_bytes: u64,
     mtime_ms: u64,
     frecency: u32,
-    git_status: Option<String>,
+    git_status: Option<Arc<str>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -194,7 +195,7 @@ const INDEX_CACHE_FILE: &str = ".pi/cache/search-index-v1.json";
 pub struct SearchService {
     config: SearchServiceConfig,
     index: RwLock<Vec<IndexedFile>>,
-    git_index: RwLock<HashMap<PathBuf, String>>,
+    git_index: RwLock<HashMap<Arc<Path>, Arc<str>>>,
 }
 
 impl SearchService {
@@ -280,8 +281,8 @@ impl SearchService {
 
                 items.push(IndexedFile {
                     relative_path_lc: relative.to_lowercase(),
-                    relative_path: relative,
-                    absolute_path: path.to_path_buf(),
+                    relative_path: Arc::from(relative),
+                    absolute_path: Arc::from(path),
                     size_bytes: metadata.len(),
                     mtime_ms: modified_ms,
                     frecency,
@@ -752,7 +753,7 @@ impl SearchService {
             let code = &line[..2];
             let path = line[3..].trim();
             let absolute = self.config.workspace_root.join(path);
-            status_map.insert(absolute, code.to_string());
+            status_map.insert(Arc::from(absolute), Arc::from(code));
         }
 
         Ok(())
@@ -783,8 +784,8 @@ impl SearchService {
                         .as_millis() as u64;
                     index.push(IndexedFile {
                         relative_path_lc: relative.to_lowercase(),
-                        relative_path: relative,
-                        absolute_path: changed_path.clone(),
+                        relative_path: Arc::from(relative),
+                        absolute_path: Arc::from(changed_path.as_path()),
                         size_bytes: metadata.len(),
                         mtime_ms: modified_ms,
                         frecency: 0,
